@@ -12,13 +12,13 @@
 //   npm run bench:tokens      # 仅本脚本
 //   npm run bench             # 全部基准（dist + tokens）
 //
-// 【参考量级】（Node 24 / Win11，2026-09；仅作数量级锚点，勿作绝对断言）
+// 【参考量级】（Node 24 / Win11，2026-09-07 实测锚点；仅作数量级锚点，勿作绝对断言）
 //   estimateTokens(1MB ASCII)  ≈ 10ms     （ASCII 3.5-4 字符/token）
-//   estimateTokens(1MB CJK)    ≈ 5.4ms    （汉字 1.5 字/token——CJK 项比
+//   estimateTokens(1MB CJK)    ≈ 5.2ms    （汉字 1.5 字/token——CJK 项比
 //                                           ASCII 项便宜是 1.5 比率生效的标志，
 //                                           若反超说明比率改动回退了）
-//   computePerfSample(20 parts)            ≈ 0.001ms
-//   aggregatePerf(100 msgs)                ≈ 0.03ms
+//   computePerfSample(20 parts)            ≈ 0.002ms
+//   aggregatePerf(100 msgs)                ≈ 0.08ms
 //
 // 【与其他基准的关系】benchmarks/dist-bench.mts 的"冷启动/旧基线"数字
 // ≈ 本脚本 estimateTokens 吞吐 × dist-bench 夹具文本量（~3MB → ~20ms），

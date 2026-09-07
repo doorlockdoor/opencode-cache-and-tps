@@ -45,7 +45,7 @@ if (!sessions.length) {
   process.exit(0)
 }
 const ph = sessions.map(() => "?").join(",")
-const msgs = db.prepare(`SELECT id, time_created, data FROM message WHERE session_id IN (${ph}) ORDER BY time_created DESC`).all(...sessions.map(s => s.id)) as { id: string; time_created: number; data: string }[]
+const msgs = db.prepare(`SELECT id, time_created, data FROM message WHERE session_id IN (${ph}) AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC`).all(...sessions.map(s => s.id)) as { id: string; time_created: number; data: string }[]
 
 let minT = Infinity, maxT = 0
 const groups = new Map<string, { reas: { text: string; actual: number }[]; ans: { text: string; actual: number }[] }>()
@@ -55,15 +55,16 @@ const groupOf = (key: string) => {
   return g
 }
 
+const partStmt = db.prepare("SELECT data FROM part WHERE message_id = ?")
+
 for (const row of msgs) {
   const d = JSON.parse(row.data)
-  if (d.role !== "assistant") continue
   const key = [d.providerID ?? "?", d.modelID ?? "?"].join(" | ")
   const tok = d.tokens ?? {}
   const reasActual = num(tok.reasoning)
   const outActual = num(tok.output)
   if (reasActual <= 0 && outActual <= 0) continue
-  const parts = db.prepare("SELECT data FROM part WHERE message_id = ?").all(row.id) as { data: string }[]
+  const parts = partStmt.all(row.id) as { data: string }[]
   let reasText = "", outText = "", hasTool = false, compShort = false
   for (const p of parts) {
     const pd = JSON.parse(p.data)

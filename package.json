@@ -34,6 +34,7 @@
     "bench:dist": "tsx benchmarks/dist-bench.mts",
     "bench:tokens": "tsx benchmarks/tokens-bench.mts",
     "bench:calibrate": "tsx benchmarks/tokenize-calibrate.mts",
+    "bench:perf": "tsx benchmarks/perf-calibrate.mts",
     "test:balance": "tsx tests/codex-balance.test.ts",
     "test:perf": "tsx tests/perf.test.ts",
     "test:dist": "tsx tests/dist.test.ts",

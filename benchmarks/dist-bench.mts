@@ -144,6 +144,11 @@ const base = bench("5 旧行为基线（无缓存全量重扫）", () => baselin
 
 console.log(`\n收益：热重建 vs 旧基线 = ${base < 0.001 ? "∞" : (base / Math.max(warm, 0.0001)).toFixed(0)}×  (${base.toFixed(1)}ms → ${warm.toFixed(3)}ms/次)`)
 console.log(`旧基线在 20Hz 事件流下 ≈ ${(base * 20).toFixed(0)}ms/s CPU；节流后 10Hz × 热重建 ≈ ${(warm * 10).toFixed(1)}ms/s`)
+// 回退信号（宽松、只警告不 asserts——时序在 CI/负载下会随机假红，见文件头【约定】）：
+// 缓存有效时节流尖峰应远低于旧基线重扫；热重建 ≥ 旧基线 50% ≈ 缓存近乎永远 miss
+if (warm > 0 && warm >= base * 0.5) {
+  console.log(`! 回退信号：热重建 (${warm.toFixed(2)}ms) ≥ 旧基线 (${base.toFixed(1)}ms) 的 50%——指纹漏效/缓存策略失效，回看 src/dist.ts`)
+}
 
 // 6. 参照：性能聚合（同一会话）
 bench("6 aggregatePerf（150 消息，参照）", () => aggregatePerf(apiOf(session.partsByMsg), session.msgs as never), 50)
