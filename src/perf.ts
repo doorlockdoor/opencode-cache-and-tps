@@ -28,25 +28,26 @@ import { ASCII_PER_TOKEN, estimateTokens, num } from "./tokens"
 //   采样逻辑单一实现（computePerfSample），侧边栏累计与 hint 栏 lastTps
 //   共用，杜绝双源漂移。消息与 part 时间戳持久化在数据库，直接读取推导。
 
-// 小步噪声守卫：生成窗口 <500ms 时时间戳噪声占比过大，TPS 不可信 → 记 null
+/** 小步噪声守卫：生成窗口低于此值时时间戳噪声占比过大，TPS 不可信 → 记 null。 */
 export const MIN_GEN_MS = 500
-// 缓冲网关守卫：每 token 耗时 <0.2ms（非流式瞬间吐出）时 TPS 不可信 → 记 null
+/** 缓冲网关守卫：每 token 耗时低于此值（非流式瞬间吐出）时 TPS 不可信 → 记 null。 */
 export const BUFFER_MS_PER_TOKEN = 0.2
-// 实时估算守卫：生成窗口 <500ms 或产出 <8 token 时波动过大，不显示速度
+/** 实时估算守卫：生成窗口过短或产出 token 过少时波动过大，不显示速度。 */
 export const LIVE_MIN_GEN_MS = 500
+/** 实时估算守卫：流式产出 token 数下限。 */
 export const LIVE_MIN_TOK = 8
-// 整包参数守卫：缓冲 router 把工具参数作为整块 chunk 送达（不流式经过可见
-// 窗口）时，参数 token 计入分子而解码时间不在分母 → TPS 虚高。检测（首工具，
-// 单次 LLM 调用内全部工具参数都流式于 [前置内容末端, 首工具 start] 窗口）：
-//   ① 参数估算 ≥ BUFFERED_MIN_PARAM_TOK
-//   ② 参数窗口 gap = 首工具 state.time.start − 前置内容 part 末端 ≤ BUFFERED_GAP_MS
-//   ③ 隐含参数速度 ≥ BUFFERED_SPEED_RATIO × 同窗口文本流式速度
-// 三者同时命中 → 该步分子剔除工具参数估算（退回可见口径）。阈值取宽（实测
-// 正常流式的 deepseek 误伤 1/586 步），且方向保守：最多退回可见速度，不会
-// 产生虚高值；文本速度用 O(1) 长度近似（CJK 混排会低估 visTps → 偏向触发，
-// 由 gap 上界兜底：参数真实流式必占时间，不可能挤进 ≤150ms 窗口）。
+/**
+ * 整包参数守卫（三阈值联动）：缓冲 router 把工具参数整块送达（不经可见流式
+ * 窗口）→ 参数 token 计入分子而解码时间不在分母，TPS 虚高。当 ① 参数估算 ≥
+ * BUFFERED_MIN_PARAM_TOK ② 参数窗口 gap ≤ BUFFERED_GAP_MS ③ 隐含参数速度 ≥
+ * BUFFERED_SPEED_RATIO × 同窗口文本速度三者同时命中 → 该步分子剔除工具参数
+ * 估算（退回可见口径）。阈值取宽（实测 deepseek 误伤 1/586 步）、方向保守：
+ * 最多退回可见速度，不会虚高。
+ */
 export const BUFFERED_GAP_MS = 150
+/** 整包参数守卫阈值：参数估算 token 数下限。 */
 export const BUFFERED_MIN_PARAM_TOK = 30
+/** 整包参数守卫阈值：隐含参数速度 / 同窗口文本速度倍数下限。 */
 export const BUFFERED_SPEED_RATIO = 5
 
 /**
@@ -71,6 +72,7 @@ function mergedIntervalMs(intervals: readonly [number, number][], lo: number, hi
   return ms
 }
 
+/** 单条 assistant 消息性能样本：ttft 首字延迟 (ms)、tps 输出速度（守卫不通过记 null）、latency 净模型延迟 (ms)。 */
 export interface PerfSample {
   ttft: number
   tps: number | null
@@ -115,9 +117,11 @@ function bufferedParamTok(
 }
 
 // ── per-message perf sample ──
-// 单条 assistant 消息的性能样本（精确口径唯一实现）：侧边栏「性能」累计与
-// hint 栏 lastTps 共用。条件：已完成、无错误、非压缩、产出 token>0、有内容
-// part 且首 part 晚于创建；返回 null 表示不计入样本。
+/**
+ * 单条 assistant 消息的性能样本（精确口径唯一实现）：侧边栏「性能」累计与
+ * hint 栏 lastTps 共用。条件：已完成、无错误、非压缩、产出 token>0、有内容
+ * part 且首 part 晚于创建；返回 null 表示不计入样本。
+ */
 export function computePerfSample(
   am: AssistantMessage,
   parts: readonly Part[],
@@ -183,10 +187,11 @@ export function computePerfSample(
 }
 
 // ── session perf aggregation ──
-// PerfStats 从 index.tsx 迁入：聚合与采样同属精确口径，单文件单来源，可被
-// tests/perf.test.ts 直接单测。聚合用中位数而非均值：会话常跨模型/跨路由，
-// 均值被高速段与离群短步拉偏；偶数样本取中间两值平均。数组随聚合重建
-// （节流下 O(n log n) 可忽略），KV 快照只存聚合结果不存原始样本。
+/**
+ * 会话性能聚合（中位数口径，可被 tests/perf.test.ts 直接单测；KV 快照只存
+ * 聚合结果不存原始样本）。用中位数而非均值：会话常跨模型/跨路由，均值被
+ * 高速段与离群短步拉偏；偶数样本取中间两值平均。
+ */
 export interface PerfStats {
   ttftLast: number | null // 最近一次首字延迟 (ms)
   tpsLast: number | null  // 最近一次输出速度 (tok/s)
@@ -199,6 +204,7 @@ export interface PerfStats {
   hasPerf: boolean        // 是否存在有效样本
 }
 
+/** PerfStats 全空初始值。 */
 export const EMPTY_PERF: PerfStats = {
   ttftLast: null, tpsLast: null, latLast: null,
   ttftMed: null, tpsMed: null, latMed: null,
@@ -288,22 +294,22 @@ export function aggregatePerf(api: TuiPluginApi, msgs: readonly Message[], opts?
 }
 
 // ── live (streaming) perf estimation ──
-// usage 与 time.completed 仅在 step 结束时写入，流式期间从 part 增量实时估算：
-//   TTFT = 首个内容 part 的 time.start − time.created（首个 part 到达前显示等待时长）
-//   TPS  = Σ estimateTokens(text/reasoning + 已完成工具参数) / 纯生成时长
-//          （含 reasoning，与精确口径同为全量方向：工具参数经 input/raw 估算
-//            近似——pending 段无流式增量可估；estimateTokens 有估算误差，
-//            显示时保留 "≈" 标记，step 结束后由精确值覆盖）
-//   纯生成时长 = now − 首个 part start − 已完成工具区间并集（重叠去重、钳位到生成窗口）
-//   工具相位：part pending/running、消息以 tool-calls/unknown 收尾（延续到下一步
-//   prefill）均计入工具计时；工具恢复后速度与暂停前严格连续。
-// 时钟：part 时间戳与 Date.now() 同机同钟，可直接相减。
+/**
+ * usage 与 time.completed 仅在 step 结束时写入，流式期间从 part 增量实时估算：
+ *   TTFT = 首个内容 part 的 time.start − time.created（首个 part 到达前显示等待时长）
+ *   TPS  = Σ estimateTokens(text/reasoning + 已完成工具参数) / 纯生成时长
+ *          （含 reasoning，全量方向：工具参数经 input/raw 近似——pending 段无
+ *            增量可估；估算有误差，显示保留 "≈"，step 结束由精确值覆盖）
+ *   纯生成时长 = now − 首个 part start − 已完成工具区间并集（重叠去重、钳位）
+ *   工具相位（pending/running、tool-calls/unknown 收尾延续）计入工具计时；
+ *   工具恢复后速度与暂停前严格连续。时钟同机同钟，可直接相减。
+ */
 export type LivePerf =
   | { phase: "prefill"; waitMs: number }                      // 首个内容 part 尚未到达
   | { phase: "streaming"; ttft: number; tps: number | null }  // 已有内容产出
   | { phase: "tool"; toolMs: number }                         // 工具运行/工具回合延续
 
-// 单条消息内最后一次工具调用的 time.start（任意状态）
+/** 单条消息内最后一次工具调用的 time.start（任意状态）。 */
 function lastToolStartOf(api: TuiPluginApi, m: AssistantMessage): number | undefined {
   let t: number | undefined
   let parts: readonly Part[] = []
@@ -316,6 +322,7 @@ function lastToolStartOf(api: TuiPluginApi, m: AssistantMessage): number | undef
   return t
 }
 
+/** 流式期间实时估算当前步性能（口径见 LivePerf）；无进行中 step 返回 null。 */
 export function computeLivePerf(api: TuiPluginApi, sid: string): LivePerf | null {
   try {
     // status 仅作辅助排除（retry 等）：函数不存在时跳过，

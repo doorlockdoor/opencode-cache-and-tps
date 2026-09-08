@@ -3,6 +3,7 @@
 // satisfies `Translation`; the compiler enforces key completeness.
 // ---------------------------------------------------------------------------
 
+/** 支持的语言代码。 */
 export type LangCode = "zh" | "en" | "ja" | "ko"
 
 const ZH_T = {
@@ -424,6 +425,7 @@ const KO_T: Translation = {
   subNoFound: "서브 에이전트를 찾을 수 없습니다. Session ID를 직접 붙여넣으세요",
 }
 
+/** 全量语言表（键完整性由 Translation 约束）。 */
 export const LANGS: Record<LangCode, Translation> = { zh: ZH_T, en: EN_T, ja: JA_T, ko: KO_T }
 
 /** 语言元数据：/cache-lang 选项与自动检测共用。 */

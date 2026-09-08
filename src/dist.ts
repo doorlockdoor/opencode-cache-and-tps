@@ -13,6 +13,7 @@ import { estimateTokens, num } from "./tokens"
 // 所有被扫描字段的长度与状态，任一变化即失效；条目超上限全清防泄漏。
 // 性能验证见 benchmarks/dist-bench.mts（npm run bench:dist）。
 
+/** 单条消息 token 分布与当前回合 API 精确值（字段见行内注释）。 */
 export interface TokenDist {
   system: number   // UserMessage.system + agent config prompt
   user: number     // user message text/file parts

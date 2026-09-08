@@ -10,8 +10,10 @@ export interface BalanceEntry {
   details?: BalanceDetail[]
 }
 
+/** 余额明细维度（各 provider 按能力取子集）。 */
 export type BalanceDetailKey = "plan" | "used" | "remaining" | "window" | "reset" | "codeReview" | "credits" | "resetCredits"
 
+/** 单条余额明细：维度 + 预格式化文本，可选配额窗口。 */
 export interface BalanceDetail {
   key: BalanceDetailKey
   value: string
@@ -283,6 +285,7 @@ function appendQuotaDetails(details: BalanceDetail[], percentages: CodexPercenta
   details.push({ key: "remaining", value: `${formatPercent(percentages.remaining)}%`, ...scope })
 }
 
+/** 解析 OpenAI 风格余额/用量响应为 BalanceEntry[]；结构不符抛 BalanceError("EMPTY")。 */
 export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry[] {
   const json = asRecord(raw)
   if (!json) throw new BalanceError("EMPTY")

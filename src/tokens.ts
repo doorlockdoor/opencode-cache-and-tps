@@ -20,14 +20,17 @@ export function num(v: unknown): number {
 // 标点独立 token，需收紧）。
 // See: GPT-4 / Claude tokenizer behaviour with structured text.
 
+/** token 密度画像：按 part 形态选择 ASCII 字符/token 折算系数。 */
 export type TokProfile = "thinking" | "answer" | "code"
 
+/** 各画像的 ASCII 密度（字符/token，实测标定）。 */
 export const ASCII_PER_TOKEN: Record<TokProfile, number> = {
   thinking: 4.0, // reasoning part：~95% ascii 思考流（实测密度 4.04）
   answer: 2.9,   // text part：符号/代码片段密集的答案（实测 2.97，含全角/符号稀释）
   code: 3.7,     // tool raw/output：纯代码/命令输出（实测密度 3.71）
 }
 
+/** 估算文本 token 数：CJK 系按字计，ASCII 按 profile 密度折算；省略 profile 时按文本形态自动检测。 */
 export function estimateTokens(text: string, profile?: TokProfile): number {
   if (!text || text.length === 0) return 0
   let ascii = 0
