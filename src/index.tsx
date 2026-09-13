@@ -226,6 +226,11 @@ function fmtMs(ms: number): string {
   return (ms / 1000).toFixed(1) + "s"
 }
 
+/** 秒格式化（DeepSeek harness 样式）：830 → "0.83s"，始终两位小数。 */
+function fmtSec(ms: number): string {
+  return (ms / 1000).toFixed(2) + "s"
+}
+
 // ── dist / perf aggregation ──
 // TokenDist 与收集函数（collectTokenDist/collectRoundUsage，含 per-message
 // 指纹缓存）见 ./dist.ts；PerfStats / aggregatePerf 见 ./perf.ts。
@@ -262,30 +267,46 @@ function createBusyTick(api: TuiPluginApi, sid: () => string): () => number {
 
 type StatSeg = { text: string; color: string | undefined }
 type Translate = ReturnType<typeof createT>
+/**
+ * 实时 TPS 行样式注册表（单一事实来源）：新增样式只在此追加一项，
+ * 类型 TpsStyle、设置菜单选项、KV 校验自动跟随。
+ * 仍需手动补充：liveStatSegs 的渲染分支 + i18n 四张表的样式文案。
+ * default = "首字 · 速度 …"；dsh = "首 Token X.XXs · … tok/s"（DeepSeek harness）。
+ */
+const TPS_STYLES = [
+  { id: "default", labelKey: "tpsStyleDefault" },
+  { id: "dsh",     labelKey: "tpsStyleDsh" },
+] as const satisfies readonly { id: string; labelKey: keyof Translation }[]
+type TpsStyle = (typeof TPS_STYLES)[number]["id"]
 
 // 流式实时估算的着色分段（PromptRightStatus 专用；侧边栏「性能」为精确口径，
-// 无实时行）：prefill → 首字等待中；streaming → 首字 · 速度(≈，未达守卫则省略)；
+// 无实时行）：prefill → 首字等待中；streaming → 首字 · 速度(未达守卫则省略)；
 // tool → 工具计时中（速度段隐藏）。
-function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined): StatSeg[] {
+// style = "dsh" 时改用 DeepSeek harness 文案（首 Token / 秒 / 无速度标签），
+// 工具阶段文案保持不变。
+function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined, style: TpsStyle = "default"): StatSeg[] {
   if (lv.phase === "tool") {
     return [
       { text: t("barTool") + " ", color: muted },
       { text: fmtMs(lv.toolMs) + "\u2026", color: text },
     ]
   }
+  const dsh = style === "dsh"
+  const label = dsh ? t("barFirstToken") : t("barTTFT")
+  const fmtTime = dsh ? fmtSec : fmtMs
   if (lv.phase === "prefill") {
     return [
-      { text: t("barTTFT") + " ", color: muted },
-      { text: fmtMs(lv.waitMs) + "\u2026", color: text },
+      { text: label + " ", color: muted },
+      { text: fmtTime(lv.waitMs) + "\u2026", color: text },
     ]
   }
   const segs: StatSeg[] = [
-    { text: t("barTTFT") + " ", color: muted },
-    { text: fmtMs(lv.ttft), color: text },
+    { text: label + " ", color: muted },
+    { text: fmtTime(lv.ttft), color: text },
   ]
   if (lv.tps !== null) {
-    segs.push({ text: " \u00b7 " + t("barTPS") + " ", color: muted })
-    segs.push({ text: "\u2248" + lv.tps.toFixed(1) + " " + t("tokS"), color: text })
+    segs.push({ text: dsh ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: muted })
+    segs.push({ text: lv.tps.toFixed(1) + " " + t("tokS"), color: text })
   }
   return segs
 }
@@ -452,6 +473,9 @@ interface PanelSignals {
   /** 性能统计是否按当前模型过滤（切模型后中位数/最近值不混入其他模型）。 */
   perfModelFilter: () => boolean
   setPerfModelFilter: (v: boolean) => void
+  /** 实时 TPS 行样式（输入框右侧流式估算）。 */
+  tpsStyle: () => TpsStyle
+  setTpsStyle: (v: TpsStyle) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
   /** Bottom status bar (prompt hint line) visibility. */
@@ -1639,7 +1663,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 }
 
 /**
- * 输入框行右侧（session_prompt_right 插槽）：流式期间显示实时 首字/速度。
+ * 输入框行右侧（session_prompt_right 插槽）：流式期间显示实时 首字/TPS（文案随 TpsStyle 变化）。
  * 宿主在 busy 时会把底部 hint 行整体替换为忙碌指示行（无插槽可注入），而
  * 输入框行右侧不受 status 控制；空闲时回落为宿主该插槽的透传（不遮挡其他插件）。
  */
@@ -1665,7 +1689,7 @@ function PromptRightStatus(props: { api: TuiPluginApi; signals: PanelSignals; se
     <Show when={live()} fallback={<props.api.ui.Slot name="session_prompt_right" session_id={sid} />}>
       {(lv) => (
         <text wrapMode="none">
-          <For each={liveStatSegs(lv(), t, pal().muted, pal().text)}>
+          <For each={liveStatSegs(lv(), t, pal().muted, pal().text, props.signals.tpsStyle())}>
             {(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}
           </For>
         </text>
@@ -1711,6 +1735,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionPerf, setSectionPerf] = createSignal(true)
   const [perfModelFilter, setPerfModelFilter] = createSignal(true)
+  const [tpsStyle, setTpsStyle] = createSignal<TpsStyle>("default")
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [sectionBottom, setSectionBottom] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
@@ -1742,6 +1767,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionSkills, setSectionSkills,
     sectionPerf, setSectionPerf,
     perfModelFilter, setPerfModelFilter,
+    tpsStyle, setTpsStyle,
     sectionBalance, setSectionBalance,
     sectionBottom, setSectionBottom,
     balanceRefresh, setBalanceRefresh,
@@ -1792,20 +1818,22 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
 
-  // ── 语言偏好恢复：KV 就绪后优先用户设置（/cache-lang），覆盖自动识别 ──
-  const restoreLang = () => {
+  // ── 显示偏好恢复：KV 就绪后优先用户设置（/cache-lang、/cache-tps-style） ──
+  const restorePrefs = () => {
     try {
       const saved = api.kv.get<string>(`${KV_PREFIX}.lang`)
       if (saved && LANG_META.some((m) => m.code === saved)) setLangCode(saved as LangCode)
+      const savedStyle = api.kv.get<string>(`${KV_PREFIX}.tps_style`)
+      if (savedStyle && TPS_STYLES.some((s) => s.id === savedStyle)) setTpsStyle(savedStyle as TpsStyle)
     } catch {}
   }
   if (api.kv.ready) {
-    restoreLang()
+    restorePrefs()
   } else {
-    const langTimer = setInterval(() => {
-      if (api.kv.ready) { clearInterval(langTimer); restoreLang() }
+    const prefTimer = setInterval(() => {
+      if (api.kv.ready) { clearInterval(prefTimer); restorePrefs() }
     }, 10)
-    api.lifecycle.onDispose(() => clearInterval(langTimer))
+    api.lifecycle.onDispose(() => clearInterval(prefTimer))
   }
 
   const pollBalance = async () => {
@@ -1968,6 +1996,33 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         api.kv.set(`${KV_PREFIX}.perf_model_filter`, !cur)
         signals.setPerfModelFilter(!cur)
         api.ui.toast({ message: t(!cur ? "perfFilterOn" : "perfFilterOff") })
+      },
+    },
+    {
+      title: "Cache: Set TPS Style",
+      value: "cache.tpsstyle",
+      description: "Choose the real-time TPS display style on the prompt line",
+      slash: { name: "cache-tps-style" },
+      onSelect: (dialog) => {
+        const t = createT(() => langCode())
+        const cur = api.kv.get<string>(`${KV_PREFIX}.tps_style`) ?? "default"
+        dialog?.replace(() => (
+          <api.ui.DialogSelect
+            title={t("tpsStyleTitle")}
+            options={TPS_STYLES.map((s) => ({
+              title: `${visualPadEnd(t(s.labelKey), 10)}${cur === s.id ? "\u2713" : ""}`,
+              value: s.id,
+            }))}
+            onSelect={(opt) => {
+              const hit = TPS_STYLES.find((s) => s.id === opt.value)
+              const style: TpsStyle = hit ? hit.id : "default"
+              api.kv.set(`${KV_PREFIX}.tps_style`, style)
+              setTpsStyle(style)
+              api.ui.toast({ message: t("tpsStyleSet", { s: t(hit ? hit.labelKey : "tpsStyleDefault") }) })
+              dialog?.clear()
+            }}
+          />
+        ))
       },
     },
     {

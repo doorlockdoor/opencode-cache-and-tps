@@ -2,8 +2,26 @@
 
 Vibe-forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
 
+Sidebar and multi-language support (configure with `/cache-lang`):
 <div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_2026-08-31_170417.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png"></img>
+</div>
+
+Real-time display while streaming:
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_07.png"></img>
+</div>
+
+Exact display after the stream ends:
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_03.png"></img>
+</div>
+
+Switchable styles, with the new DSH style (configure with `/cache-tps-style`):
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png"></img>
 </div>
 
 **Included metrics**:
@@ -13,7 +31,7 @@ Vibe-forked from opencode-visual-cache, adding first-token latency (TTFT), gener
 - Errors introduced by OpenCode's auto-compaction are ignored, and counting is paused while tools are suspended (e.g. asking a question).
 
 **Real-time TPS estimation**:
-- While streaming, the token count is an estimate (≈) that varies slightly by model; it is replaced with the exact value once the stream ends.
+- While streaming, the token count is an estimate that varies slightly by model; it is replaced with the exact value once the stream ends.
 - Chinese characters: 1.5 chars/token (measured 1.34 on GPT-o200k, 1.52 on DeepSeek-V4).
 - ASCII: 4.0 for reasoning streams, 2.9 for answer text, 3.7 for tools & code, 3.3 default for prose.
 - Full-width punctuation and full-width characters are counted as 1.

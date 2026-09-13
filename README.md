@@ -2,8 +2,26 @@
 
 Vibe自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS）等信息，支持实时刷新。
 
+支持侧边栏，多语言（使用`/cache-lang`设置）：
 <div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_2026-08-31_170417.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png"></img>
+</div>
+
+支持流式传输时，实时显示：
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_07.png"></img>
+</div>
+
+支持传输结束后，精确显示：
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_03.png"></img>
+</div>
+
+支持替换样式，新增DSH样式（使用`/cache-tps-style`设置）：
+<div align="center">
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png"></img>
 </div>
 
 **信息包含**：
@@ -13,7 +31,7 @@ Vibe自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 - 忽略opencode自动压缩造成的误差，忽略工具暂停（例如提问）时的计数。
 
 **实时TPS估算**：
-- 流式传输时token数为估算值（≈），不同模型会有偏差，传输结束后替换为精确值。
+- 流式传输时token数为估算值，不同模型会有偏差，传输结束后替换为精确值。
 - 汉字：1.5字/token（GPT-o200k实测1.34，DeepSeek-V4实测1.52）。
 - ASCII：思考流4.0，答案文本2.9，工具与代码3.7，散文默认3.3。
 - 全角标点与全角字符按1处理。

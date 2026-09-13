@@ -299,7 +299,7 @@ export function aggregatePerf(api: TuiPluginApi, msgs: readonly Message[], opts?
  *   TTFT = 首个内容 part 的 time.start − time.created（首个 part 到达前显示等待时长）
  *   TPS  = Σ estimateTokens(text/reasoning + 已完成工具参数) / 纯生成时长
  *          （含 reasoning，全量方向：工具参数经 input/raw 近似——pending 段无
- *            增量可估；估算有误差，显示保留 "≈"，step 结束由精确值覆盖）
+ *            增量可估；估算有误差，step 结束由精确值覆盖）
  *   纯生成时长 = now − 首个 part start − 已完成工具区间并集（重叠去重、钳位）
  *   工具相位（pending/running、tool-calls/unknown 收尾延续）计入工具计时；
  *   工具恢复后速度与暂停前严格连续。时钟同机同钟，可直接相减。
