@@ -2,31 +2,31 @@
 
 Vibe-forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
 
 **Right-side info style** (configure with `/cache-live-style`):
 
 Default:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="60%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="80%"></img>
 
 DSH:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="60%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="80%"></img>
 
 Minimal:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="60%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="80%"></img>
 
 **Bottom bar info style** (configure with `/cache-bar-style`):
 
 Default:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="60%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="80%"></img>
 
 Minimal:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="60%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="80%"></img>
 
 **Included metrics**:
 - **TTFT**: Time to first token — perceived time from when the user sends a request (step) to when the first token arrives.
