@@ -226,7 +226,7 @@ function fmtMs(ms: number): string {
   return (ms / 1000).toFixed(1) + "s"
 }
 
-/** 秒格式化（DeepSeek harness 样式）：830 → "0.83s"，始终两位小数。 */
+/** 秒格式化（实时行三样式统一口径）：830 → "0.83s"，始终两位小数。 */
 function fmtSec(ms: number): string {
   return (ms / 1000).toFixed(2) + "s"
 }
@@ -268,44 +268,58 @@ function createBusyTick(api: TuiPluginApi, sid: () => string): () => number {
 type StatSeg = { text: string; color: string | undefined }
 type Translate = ReturnType<typeof createT>
 /**
- * 实时 TPS 行样式注册表（单一事实来源）：新增样式只在此追加一项，
- * 类型 TpsStyle、设置菜单选项、KV 校验自动跟随。
- * 仍需手动补充：liveStatSegs 的渲染分支 + i18n 四张表的样式文案。
- * default = "首字 · 速度 …"；dsh = "首 Token X.XXs · … tok/s"（DeepSeek harness）。
+ * 显示样式注册表：输入框右侧实时行与下方提示栏各自独立，可自由组合。
+ * 新增样式只在此追加一项，类型、设置菜单选项、KV 校验自动跟随。
+ * 仍需手动补充：对应渲染分支 + i18n 四张表的样式文案。
+ * 实时行 default = "首字 X.XXs · 速度 … tok/s"；dsh = "首 Token X.XXs · … tok/s"
+ * （DeepSeek harness）；min = "X.XXs · … tok/s"（无标签）。
+ * 提示栏 default = "命中率 … · 速度 …"；min = "… · …"（无标签）。
  */
-const TPS_STYLES = [
-  { id: "default", labelKey: "tpsStyleDefault" },
-  { id: "dsh",     labelKey: "tpsStyleDsh" },
+const LIVE_STYLES = [
+  { id: "default", labelKey: "styleDefault" },
+  { id: "dsh",     labelKey: "styleDsh" },
+  { id: "min",     labelKey: "styleMin" },
 ] as const satisfies readonly { id: string; labelKey: keyof Translation }[]
-type TpsStyle = (typeof TPS_STYLES)[number]["id"]
+type LiveStyle = (typeof LIVE_STYLES)[number]["id"]
+
+const BAR_STYLES = [
+  { id: "default", labelKey: "styleDefault" },
+  { id: "min",     labelKey: "styleMin" },
+] as const satisfies readonly { id: string; labelKey: keyof Translation }[]
+type BarStyle = (typeof BAR_STYLES)[number]["id"]
 
 // 流式实时估算的着色分段（PromptRightStatus 专用；侧边栏「性能」为精确口径，
 // 无实时行）：prefill → 首字等待中；streaming → 首字 · 速度(未达守卫则省略)；
 // tool → 工具计时中（速度段隐藏）。
-// style = "dsh" 时改用 DeepSeek harness 文案（首 Token / 秒 / 无速度标签），
-// 工具阶段文案保持不变。
-function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined, style: TpsStyle = "default"): StatSeg[] {
+// 时间统一 fmtSec（始终 X.XXs，三样式一致）；style = "dsh" 额外改用 DeepSeek
+// harness 文案（首 Token / 无「速度」标签）；style = "min" 再去掉全部标签，
+// 只留 "X.XXs · … tok/s"。
+function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined, style: LiveStyle = "default"): StatSeg[] {
   if (lv.phase === "tool") {
-    return [
-      { text: t("barTool") + " ", color: muted },
-      { text: fmtMs(lv.toolMs) + "\u2026", color: text },
-    ]
+    const segs: StatSeg[] = []
+    if (style !== "min") segs.push({ text: t("barTool") + " ", color: muted })
+    segs.push({ text: fmtSec(lv.toolMs) + "\u2026", color: text })
+    return segs
   }
   const dsh = style === "dsh"
+  const min = style === "min"
   const label = dsh ? t("barFirstToken") : t("barTTFT")
-  const fmtTime = dsh ? fmtSec : fmtMs
   if (lv.phase === "prefill") {
-    return [
-      { text: label + " ", color: muted },
-      { text: fmtTime(lv.waitMs) + "\u2026", color: text },
-    ]
+    return min
+      ? [{ text: fmtSec(lv.waitMs) + "\u2026", color: text }]
+      : [
+          { text: label + " ", color: muted },
+          { text: fmtSec(lv.waitMs) + "\u2026", color: text },
+        ]
   }
-  const segs: StatSeg[] = [
-    { text: label + " ", color: muted },
-    { text: fmtTime(lv.ttft), color: text },
-  ]
+  const segs: StatSeg[] = min
+    ? [{ text: fmtSec(lv.ttft), color: text }]
+    : [
+        { text: label + " ", color: muted },
+        { text: fmtSec(lv.ttft), color: text },
+      ]
   if (lv.tps !== null) {
-    segs.push({ text: dsh ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: muted })
+    segs.push({ text: dsh || min ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: muted })
     segs.push({ text: lv.tps.toFixed(1) + " " + t("tokS"), color: text })
   }
   return segs
@@ -473,9 +487,12 @@ interface PanelSignals {
   /** 性能统计是否按当前模型过滤（切模型后中位数/最近值不混入其他模型）。 */
   perfModelFilter: () => boolean
   setPerfModelFilter: (v: boolean) => void
-  /** 实时 TPS 行样式（输入框右侧流式估算）。 */
-  tpsStyle: () => TpsStyle
-  setTpsStyle: (v: TpsStyle) => void
+  /** 输入框右侧实时行样式。 */
+  liveStyle: () => LiveStyle
+  setLiveStyle: (v: LiveStyle) => void
+  /** 下方提示栏样式。 */
+  barStyle: () => BarStyle
+  setBarStyle: (v: BarStyle) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
   /** Bottom status bar (prompt hint line) visibility. */
@@ -1403,7 +1420,8 @@ function keyShortcut(api: TuiPluginApi, command: string, fallback: string): stri
 }
 
 /**
- * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · TPS。
+ * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · TPS
+ * （min 样式下省略「命中率 / 速度」标签，仅保留数值与趋势箭头）。
  * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
  * 统计信息与路径同行显示在中间位置。
  */
@@ -1545,20 +1563,21 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 
   // 统计部分分段（单一数据源）：量宽拼接 text，渲染逐段着色，避免双源漂移。
   // 仅精确口径（命中率 + 趋势 + TPS）；流式实时估算在输入框行右侧显示。
+  // 提示栏样式为 min 时去掉「命中率 / 速度」标签，仅保留数值与趋势箭头。
   const statsSegs = createMemo<StatSeg[]>(() => {
     const s = stats()
     const hr = s && s.hitRate >= 0 ? (Math.floor(s.hitRate * 10) / 10).toFixed(1) + "%" : "--"
-    const segs: StatSeg[] = [
-      { text: t("barHit") + " ", color: pal().muted },
-      { text: hr, color: hitColor() },
-    ]
+    const plain = props.signals.barStyle() === "min"
+    const segs: StatSeg[] = []
+    if (!plain) segs.push({ text: t("barHit") + " ", color: pal().muted })
+    segs.push({ text: hr, color: hitColor() })
     const tr = trend()
     if (tr !== null) {
       segs.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
     }
     const tps = lastTps()
     if (tps !== null) {
-      segs.push({ text: " \u00b7 " + t("barTPS") + " ", color: pal().muted })
+      segs.push({ text: plain ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: pal().muted })
       segs.push({ text: tps.toFixed(1) + " " + t("tokS"), color: pal().text })
     }
     // 末尾分隔符：hint 会被宿主在同一行拼接 context/cost 文字（如 "129.6K (13%) · $0.41"）
@@ -1663,7 +1682,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 }
 
 /**
- * 输入框行右侧（session_prompt_right 插槽）：流式期间显示实时 首字/TPS（文案随 TpsStyle 变化）。
+ * 输入框行右侧（session_prompt_right 插槽）：流式期间显示实时 首字/TPS（文案随 LiveStyle 变化）。
  * 宿主在 busy 时会把底部 hint 行整体替换为忙碌指示行（无插槽可注入），而
  * 输入框行右侧不受 status 控制；空闲时回落为宿主该插槽的透传（不遮挡其他插件）。
  */
@@ -1689,7 +1708,7 @@ function PromptRightStatus(props: { api: TuiPluginApi; signals: PanelSignals; se
     <Show when={live()} fallback={<props.api.ui.Slot name="session_prompt_right" session_id={sid} />}>
       {(lv) => (
         <text wrapMode="none">
-          <For each={liveStatSegs(lv(), t, pal().muted, pal().text, props.signals.tpsStyle())}>
+          <For each={liveStatSegs(lv(), t, pal().muted, pal().text, props.signals.liveStyle())}>
             {(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}
           </For>
         </text>
@@ -1735,7 +1754,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionPerf, setSectionPerf] = createSignal(true)
   const [perfModelFilter, setPerfModelFilter] = createSignal(true)
-  const [tpsStyle, setTpsStyle] = createSignal<TpsStyle>("default")
+  const [liveStyle, setLiveStyle] = createSignal<LiveStyle>("default")
+  const [barStyle, setBarStyle] = createSignal<BarStyle>("default")
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [sectionBottom, setSectionBottom] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
@@ -1767,7 +1787,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionSkills, setSectionSkills,
     sectionPerf, setSectionPerf,
     perfModelFilter, setPerfModelFilter,
-    tpsStyle, setTpsStyle,
+    liveStyle, setLiveStyle,
+    barStyle, setBarStyle,
     sectionBalance, setSectionBalance,
     sectionBottom, setSectionBottom,
     balanceRefresh, setBalanceRefresh,
@@ -1818,13 +1839,17 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
 
-  // ── 显示偏好恢复：KV 就绪后优先用户设置（/cache-lang、/cache-tps-style） ──
+  // ── 显示偏好恢复：KV 就绪后优先用户设置（/cache-lang、/cache-live-style、/cache-bar-style） ──
   const restorePrefs = () => {
     try {
       const saved = api.kv.get<string>(`${KV_PREFIX}.lang`)
       if (saved && LANG_META.some((m) => m.code === saved)) setLangCode(saved as LangCode)
-      const savedStyle = api.kv.get<string>(`${KV_PREFIX}.tps_style`)
-      if (savedStyle && TPS_STYLES.some((s) => s.id === savedStyle)) setTpsStyle(savedStyle as TpsStyle)
+      // 旧键迁移：tps_style（default/dsh/min）→ 实时行；底栏仅在 min 时去标签
+      const legacy = api.kv.get<string>(`${KV_PREFIX}.tps_style`)
+      const savedLive = api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? legacy
+      if (savedLive && LIVE_STYLES.some((s) => s.id === savedLive)) setLiveStyle(savedLive as LiveStyle)
+      const savedBar = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? (legacy === "min" ? "min" : "default")
+      if (savedBar && BAR_STYLES.some((s) => s.id === savedBar)) setBarStyle(savedBar as BarStyle)
     } catch {}
   }
   if (api.kv.ready) {
@@ -1999,26 +2024,53 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
     {
-      title: "Cache: Set TPS Style",
-      value: "cache.tpsstyle",
-      description: "Choose the real-time TPS display style on the prompt line",
-      slash: { name: "cache-tps-style" },
+      title: "Cache: Set Live Line Style",
+      value: "cache.livestyle",
+      description: "Choose the real-time display style for the prompt line",
+      slash: { name: "cache-live-style" },
       onSelect: (dialog) => {
         const t = createT(() => langCode())
-        const cur = api.kv.get<string>(`${KV_PREFIX}.tps_style`) ?? "default"
+        const cur = api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? "default"
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={t("tpsStyleTitle")}
-            options={TPS_STYLES.map((s) => ({
+            title={t("liveStyleTitle")}
+            options={LIVE_STYLES.map((s) => ({
               title: `${visualPadEnd(t(s.labelKey), 10)}${cur === s.id ? "\u2713" : ""}`,
               value: s.id,
             }))}
             onSelect={(opt) => {
-              const hit = TPS_STYLES.find((s) => s.id === opt.value)
-              const style: TpsStyle = hit ? hit.id : "default"
-              api.kv.set(`${KV_PREFIX}.tps_style`, style)
-              setTpsStyle(style)
-              api.ui.toast({ message: t("tpsStyleSet", { s: t(hit ? hit.labelKey : "tpsStyleDefault") }) })
+              const hit = LIVE_STYLES.find((s) => s.id === opt.value)
+              const style: LiveStyle = hit ? hit.id : "default"
+              api.kv.set(`${KV_PREFIX}.style_live`, style)
+              setLiveStyle(style)
+              api.ui.toast({ message: t("liveStyleSet", { s: t(hit ? hit.labelKey : "styleDefault") }) })
+              dialog?.clear()
+            }}
+          />
+        ))
+      },
+    },
+    {
+      title: "Cache: Set Status Bar Style",
+      value: "cache.barstyle",
+      description: "Choose the display style for the bottom status bar",
+      slash: { name: "cache-bar-style" },
+      onSelect: (dialog) => {
+        const t = createT(() => langCode())
+        const cur = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? "default"
+        dialog?.replace(() => (
+          <api.ui.DialogSelect
+            title={t("barStyleTitle")}
+            options={BAR_STYLES.map((s) => ({
+              title: `${visualPadEnd(t(s.labelKey), 10)}${cur === s.id ? "\u2713" : ""}`,
+              value: s.id,
+            }))}
+            onSelect={(opt) => {
+              const hit = BAR_STYLES.find((s) => s.id === opt.value)
+              const style: BarStyle = hit ? hit.id : "default"
+              api.kv.set(`${KV_PREFIX}.style_bar`, style)
+              setBarStyle(style)
+              api.ui.toast({ message: t("barStyleSet", { s: t(hit ? hit.labelKey : "styleDefault") }) })
               dialog?.clear()
             }}
           />
