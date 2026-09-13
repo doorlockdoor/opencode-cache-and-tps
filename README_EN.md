@@ -2,24 +2,11 @@
 
 Vibe-forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
 
-Sidebar and multi-language support (configure with `/cache-lang`):
 <div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png"></img>
 </div>
 
-Real-time display while streaming:
-<div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png"></img>
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_07.png"></img>
-</div>
-
-Exact display after the stream ends:
-<div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png"></img>
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_03.png"></img>
-</div>
-
-Switchable styles, with the new DSH style (configure with `/cache-tps-style`):
+New DSH style display (configure with `/cache-tps-style`):
 <div align="center">
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png"></img>
 </div>

@@ -2,24 +2,11 @@
 
 Vibe自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS）等信息，支持实时刷新。
 
-支持侧边栏，多语言（使用`/cache-lang`设置）：
 <div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png"></img>
 </div>
 
-支持流式传输时，实时显示：
-<div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png"></img>
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_07.png"></img>
-</div>
-
-支持传输结束后，精确显示：
-<div align="center">
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png"></img>
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_03.png"></img>
-</div>
-
-支持替换样式，新增DSH样式（使用`/cache-tps-style`设置）：
+新增DSH样式显示（使用`/cache-tps-style`设置）：
 <div align="center">
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png"></img>
 </div>
