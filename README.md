@@ -8,25 +8,25 @@ Vibe自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 
 默认:
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="90%"></img>
 
 DSH：
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="90%"></img>
 
 极简：
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="90%"></img>
 
 **底部信息样式**（使用`/cache-bar-style`设置）：
 
 默认：
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="90%"></img>
 
 极简：
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="80%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="90%"></img>
 
 **信息包含**：
 - **TTFT**：首字延迟，从用户发出请求（step）到第一个token的体感时间。
