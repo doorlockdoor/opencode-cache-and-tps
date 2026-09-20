@@ -1,6 +1,7 @@
 ## Introduction
 
-Vibe-forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
+Forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
+> Synced with upstream @1.6.5
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
 
@@ -27,6 +28,10 @@ Default:
 Minimal:
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="90%"></img>
+
+**Sidebar info**:
+
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png" width="90%"></img>
 
 **Included metrics**:
 - **TTFT**: Time to first token — perceived time from when the user sends a request (step) to when the first token arrives.
