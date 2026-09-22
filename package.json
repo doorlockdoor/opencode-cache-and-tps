@@ -1,24 +1,19 @@
 {
   "name": "opencode-visual-cache",
-  "version": "1.6.5",
+  "version": "1.7.1",
   "description": "OpenCode TUI plugin displaying real-time token cache hit rate in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
   "exports": {
-    "./server": {
-      "import": "./dist/server.js",
-      "types": "./dist/server.d.ts"
-    },
-    "./tui": {
-      "import": "./dist/tui.js",
-      "config": {
-        "enabled": true
-      }
+    "./tui": "./tui.js",
+    "./v2": {
+      "types": "./dist/v2/index.d.ts",
+      "default": "./dist/v2.js"
     }
   },
   "files": [
     "dist",
-    "src",
+    "tui.js",
     "install.mjs",
     "README.md",
     "README_EN.md"
@@ -27,9 +22,10 @@
     "opencode-visual-cache": "install.mjs"
   },
   "scripts": {
-    "build": "tsc && node build.tui.mjs",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && node build.tui.mjs && tsc",
     "build:tui": "node build.tui.mjs",
     "typecheck": "tsc --noEmit && tsc -p tests/tsconfig.json && tsc -p benchmarks/tsconfig.json",
+    "pretypecheck": "node scripts/gen-version.mjs",
     "bench": "npm run bench:dist && npm run bench:tokens",
     "bench:dist": "tsx benchmarks/dist-bench.mts",
     "bench:tokens": "tsx benchmarks/tokens-bench.mts",
@@ -39,9 +35,13 @@
     "test:perf": "tsx tests/perf.test.ts",
     "test:dist": "tsx tests/dist.test.ts",
     "test:util": "tsx tests/util.test.ts",
-    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util",
-    "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\n')\"",
-    "prepublishOnly": "tsc"
+    "test:v2": "tsx tests/v2-messages.test.ts",
+    "test:bar": "tsx tests/bar-items.test.ts",
+    "test:balance-auto": "tsx tests/balance.test.ts",
+    "test:commands": "tsx tests/commands-shared.test.ts",
+    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util && npm run test:v2 && npm run test:bar && npm run test:balance-auto && npm run test:commands",
+    "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\r\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\r\\n')\"",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "opencode",
@@ -59,9 +59,30 @@
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.14.0",
     "@opencode-ai/sdk": ">=1.14.0",
-    "@opentui/core": ">=0.2.0",
-    "@opentui/solid": ">=0.2.0",
+    "@opencode/plugin": ">=2.0.0",
+    "@opentui/core": ">=0.5.1",
+    "@opentui/solid": ">=0.5.1",
     "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    },
+    "@opencode-ai/sdk": {
+      "optional": true
+    },
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.16",

@@ -1,37 +1,14 @@
 ## Introduction
 
 Forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
-> Synced with upstream @1.6.5
+> ✅ Updated for opencode v2 compatibility.
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
 
-**Right-side info style** (configure with `/cache-live-style`):
-
-Default:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="90%"></img>
-
-DSH:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="90%"></img>
-
-Minimal:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="90%"></img>
-
-**Bottom bar info style** (configure with `/cache-bar-style`):
-
-Default:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="90%"></img>
-
-Minimal:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="90%"></img>
-
-**Sidebar info**:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png" width="90%"></img>
+**Display style settings**:
+- `/cache-bar` — configure which items the bottom bar shows; by default only "Hit rate" and "Speed" are shown.
+- `/cache-live-style` — set the style of the real-time TPS and other live info: Default, DSH, or Minimal.
+- `/cache-bar-style` — set the style of the exact TPS and other stats: Default or Minimal.
 
 **Included metrics**:
 - **TTFT**: Time to first token — perceived time from when the user sends a request (step) to when the first token arrives.
@@ -47,36 +24,11 @@ Minimal:
 
 ## Local Build
 
-Run `npm run build`, then copy `dist/tui.js` into `~/.config/opencode/plugins` and rename it to `opencode-visual-cache.js`.
+Clone the repository and run the following command. It builds automatically, copies the artifacts to `~/.config/opencode/plugins`, and sets up the config file and dependencies.
 
-```powershell
-npm run build; if ($?) { New-Item -ItemType Directory -Force "~\.config\opencode\plugins" | Out-Null; Copy-Item dist\tui.js "~\.config\opencode\plugins\opencode-visual-cache.js" -Force }
+```bash
+node install.mjs
 ```
-
-Edit `~/.config/opencode/tui.json` to add the local plugin.
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    // ...
-    "./plugins/opencode-visual-cache.js"
-  ]
-}
-```
-
-Edit `~/.config/opencode/package.json` to add the dependency.
-
-```jsonc
-{
-  "dependencies": {
-    // ...
-    "@opentui/solid": "0.4.5"
-  }
-}
-```
-
-Restart OpenCode.
 
 ## License
 

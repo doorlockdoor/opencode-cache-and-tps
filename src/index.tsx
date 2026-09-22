@@ -7,25 +7,31 @@ import type {
   TuiSlotContext,
   TuiSlotPlugin,
   TuiPluginModule,
-  TuiThemeCurrent,
   TuiDialogStack,
   TuiPromptRef,
   SequenceBindingLike,
 } from "@opencode-ai/plugin/tui"
-import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
+import type { Message, AssistantMessage } from "@opencode-ai/sdk"
 import type { Part, ToolPart } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, untrack } from "solid-js"
-import { PLUGIN_VERSION } from "./_version"
-import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceDetail, type BalanceDetailKey, type BalanceEntry, type BalanceProvider } from "./balance-providers"
-import { LANG_META, createT, detectLang, type LangCode, type Translation } from "./i18n"
+import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "./balance-providers"
+import { syncAutoBalance } from "./balance"
+import { collectUsageBySession } from "./stats"
+import {
+  applyBarItem, applyBarStyle, applyCurrency, applyLang, applyLiveStyle,
+  applyPerfFilter, applyRate, applySection, barItemChoices, barStyleChoices,
+  configToast, currencyChoices, langChoices, liveStyleChoices, sectionChoices,
+} from "./commands-shared"
+import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 import { num } from "./tokens"
-import { computePerfSample, computeLivePerf, aggregatePerf, EMPTY_PERF, modelKeyOf, currentModelKey, type LivePerf, type PerfStats } from "./perf"
-import { collectTokenDist, type TokenDist } from "./dist"
-import { shallowEqual, createThrottledBumper } from "./util"
+import { computePerfSample, computeLivePerf, modelKeyOf, currentModelKey } from "./perf"
+import { FALLBACK, MAX_SAT, desaturateTo, fmtCost, visualWidth, truncateVisual } from "./ui"
+import { fmtCompact, formatBalanceText } from "./currency"
+import { LIVE_STYLES, BAR_STYLES, readBarItem, liveStatSegs, createBusyTick, type StatSeg } from "./live"
+import { KV_PREFIX, type BalanceState, type PanelSignals, type LiveStyle, type BarStyle } from "./panel/panel-api"
+import { TokenCachePanel } from "./panel/TokenCachePanel"
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
 
 // Bun / Node globals — available at runtime in the OpenCode TUI process
 declare const process: {
@@ -33,329 +39,15 @@ declare const process: {
   getBuiltinModule?: (id: string) => unknown
 } | undefined
 
-// KV 存储键前缀（单一来源，避免各组件间键名漂移）
-const KV_PREFIX = "cache_panel"
-
-// ── terminal-width helpers ────────────────────────────────────────
-// CJK characters occupy 2 terminal columns; padEnd/padStart count
-// string length (=1 per char), which breaks alignment with mixed text.
-
-function charColumns(c: string): number {
-  const code = c.codePointAt(0) ?? 0
-  if (code < 0x20) return 0                              // control
-  if (code < 0x7F) return 1                              // ASCII
-  if (code < 0xA0) return 0                              // C1 controls
-  // East-Asian wide / fullwidth ranges
-  if ((code >= 0x1100 && code <= 0x115F) ||              // Hangul Jamo
-      (code >= 0x2E80 && code <= 0xA4CF) ||              // CJK Radicals … Yi
-      (code >= 0xAC00 && code <= 0xD7A3) ||              // Hangul
-      (code >= 0xF900 && code <= 0xFAFF) ||              // CJK Compat
-      (code >= 0xFE10 && code <= 0xFE6F) ||              // Vertical / Compat
-      (code >= 0xFF01 && code <= 0xFF60) ||              // Fullwidth
-      (code >= 0xFFE0 && code <= 0xFFE6) ||              // Fullwidth signs
-      (code >= 0x1F300 && code <= 0x1F64F) ||            // Misc Symbols (emoji)
-      (code >= 0x20000 && code <= 0x3FFFD))              // SIP / TIP
-    return 2
-  return 1
-}
-
-function visualWidth(s: string): number {
-  let w = 0; for (const c of s) w += charColumns(c); return w
-}
-
-function visualPadEnd(s: string, cols: number): string {
-  const pad = cols - visualWidth(s)
-  return pad > 0 ? s + " ".repeat(pad) : s
-}
-
-/** Truncate `s` to fit within `maxCols` visual columns, appending "…" when cut. */
-function truncateVisual(s: string, maxCols: number): string {
-  if (visualWidth(s) <= maxCols) return s
-  let result = "", w = 0
-  for (const c of s) {
-    const cw = charColumns(c)
-    if (w + cw > maxCols - 1) { result += "\u2026"; break }
-    result += c; w += cw
-  }
-  return result
-}
-
 // ── language ──────────────────────────────────────────────────────
-// 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测。
-// 用户通过 /cache-lang 设置的偏好会在 KV 就绪后优先覆盖（见 tui() 内恢复逻辑）。
+// 初始化：CACHE_TUI_LANG 覆盖 → 系统 locale；/cache-lang 偏好在 KV 就绪后覆盖。
 
 const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
 const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
   ? (DEBUG_LANG as LangCode)
   : detectLang()
 
-// ── color helpers ────────────────────────────────────────────────
-
-/** Extract { r, g, b } (0–255) from a hex string or RGBA-like object. */
-function rgb(raw: unknown): { r: number; g: number; b: number } | null {
-  if (typeof raw === "string" && raw.startsWith("#")) {
-    const h = raw.slice(1)
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-    }
-  }
-  if (raw && typeof raw === "object") {
-    const o = raw as Record<string, unknown>
-    if (typeof o.r === "number" && typeof o.g === "number" && typeof o.b === "number") {
-      // RGBA channels may be 0-1 floats; detect and upscale.
-      const scale = o.r > 1 || o.g > 1 || o.b > 1 ? 1 : 255
-      return {
-        r: Math.round(o.r * scale),
-        g: Math.round(o.g * scale),
-        b: Math.round(o.b * scale),
-      }
-    }
-  }
-  return null
-}
-
-/** HSL saturation of an RGB color (0–1). */
-function saturation(r: number, g: number, b: number): number {
-  const max = Math.max(r, g, b) / 255
-  const min = Math.min(r, g, b) / 255
-  const delta = max - min
-  if (delta === 0) return 0
-  const L = (max + min) / 2
-  return L <= 0.5 ? delta / (max + min) : delta / (2 - max - min)
-}
-
-/**
- * If the colour's saturation exceeds `maxSat`, pull it toward grey
- * until saturation drops to maxSat.  Returns a hex string.
- */
-function desaturateTo(raw: unknown, maxSat: number, fallback: string): string {
-  const c = rgb(raw)
-  if (!c) return fallback
-  const sat = saturation(c.r, c.g, c.b)
-  if (sat <= maxSat) {
-    // already muted — return as hex
-    return "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("")
-  }
-  /**
-   * Binary search for the optimal grey-mix ratio α (0…1).
-   *
-   * 12 iterations → 1/2^12 ≈ 1/4096 resolution.  The downstream RGB
-   * channels are only 0–255 (8 bit), so 8 iterations (1/256) would
-   * technically suffice; 12 is intentionally over-budget — the extra
-   * precision costs almost nothing and guarantees the saturation probe
-   * converges to within a fraction of an 8‑bit step, eliminating
-   * colour banding in edge cases.
-   */
-  // Bt.601 luma (perceptual brightness used as the grey anchor)
-  const luma = c.r * 0.299 + c.g * 0.587 + c.b * 0.114
-  let lo = 0, hi = 1
-  for (let i = 0; i < 12; i++) {
-    const mid = (lo + hi) / 2
-    const nr = Math.round(c.r + (luma - c.r) * mid)
-    const ng = Math.round(c.g + (luma - c.g) * mid)
-    const nb = Math.round(c.b + (luma - c.b) * mid)
-    if (saturation(nr, ng, nb) > maxSat) lo = mid
-    else hi = mid
-  }
-  const nr = Math.round(c.r + (luma - c.r) * hi)
-  const ng = Math.round(c.g + (luma - c.g) * hi)
-  const nb = Math.round(c.b + (luma - c.b) * hi)
-  return "#" + [nr, ng, nb].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
-}
-
-/** Darken a hex colour by multiplying each channel by `factor` (0–1). */
-function dimColor(hex: string, factor = 0.5): string {
-  const c = rgb(hex)
-  if (!c) return hex
-  const r = Math.round(c.r * factor)
-  const g = Math.round(c.g * factor)
-  const b = Math.round(c.b * factor)
-  return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
-}
-
-// Morandi fallbacks — used when a theme colour cannot be resolved
-const FALLBACK = {
-  primary: "#8B9DAF",
-  text:    "#C5C5BB",
-  muted:   "#7A7A72",
-  success: "#9CAF8B",
-  warning: "#C5B88D",
-  error:   "#B08A8A",
-  border:  "#6B6B63",
-} as const
-
-/**
- * Desaturation ceiling for the Morandi-style palette.
- *
- * Morandi colours float around 0.15–0.30 saturation in HSL space.
- * 0.28 sits near the upper end of that range: it strips the aggressive
- * punch from high-saturation themes (Dracula, Solarized …) while
- * preserving enough colour identity that green / orange / red hit-rate
- * coding stays distinguishable.
- *
- * Lower → more grey, harder to tell colours apart.
- * Higher → bright themes bleed through and defeat the muted look.
- */
-const MAX_SAT = 0.28
-
-function progressBar(percent: number, width: number): string {
-  const clamped = Math.max(0, Math.min(100, percent))
-  const filled = Math.round((clamped / 100) * width)
-  const empty = Math.max(0, width - filled)
-  return "\u2588".repeat(filled) + "\u2591".repeat(empty)
-}
-
-function fmt(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M"
-  if (n >= 10_000) return (n / 1_000).toFixed(1) + "K"
-  return n.toLocaleString("en-US")
-}
-
-function fmtCost(n: number, symbol = "$", rate = 1): string {
-  const v = n * rate
-  if (v >= 1) return symbol + v.toFixed(2)
-  if (v >= 0.01) return symbol + v.toFixed(3)
-  return symbol + v.toFixed(4)
-}
-
-/** 时长格式化：<1s 显示 "834ms"，否则 "1.2s"。 */
-function fmtMs(ms: number): string {
-  if (ms < 1000) return Math.round(ms) + "ms"
-  return (ms / 1000).toFixed(1) + "s"
-}
-
-/** 秒格式化（实时行三样式统一口径）：830 → "0.83s"，始终两位小数。 */
-function fmtSec(ms: number): string {
-  return (ms / 1000).toFixed(2) + "s"
-}
-
-// ── dist / perf aggregation ──
-// TokenDist 与收集函数（collectTokenDist/collectRoundUsage，含 per-message
-// 指纹缓存）见 ./dist.ts；PerfStats / aggregatePerf 见 ./perf.ts。
-// 两者均为纯统计（不建立响应式依赖），调用方须在 untrack 内调用。
-
-// 流式活跃期限的 250ms 心跳：part 事件只随 delta 到达，长时间无增量（思考、
-// 缓冲、step 间隙）时由心跳推动时钟；空闲时不建 interval，零常驻开销。
-// 活跃判定优先读 session.status（busy 覆盖工具执行与 step 间隙全程），
-// API 不可用时回退到消息判定（最后一条 assistant 未完成）。
-// 返回 signal getter——在 memo 中读取它以建立 250ms 重算依赖。
-function createBusyTick(api: TuiPluginApi, sid: () => string): () => number {
-  const [tick, setTick] = createSignal(0)
-  createEffect(() => {
-    let active = false
-    try {
-      const st = api.state.session.status?.(sid()) as { type?: string } | undefined
-      if (st) active = st.type === "busy"
-      else {
-        const msgs = api.state.session.messages(sid())
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role !== "assistant") continue
-          const am = msgs[i] as AssistantMessage
-          active = !am.time?.completed && !am.error && !am.summary
-          break
-        }
-      }
-    } catch {}
-    if (!active) return
-    const timer = setInterval(() => setTick((v) => v + 1), 250)
-    onCleanup(() => clearInterval(timer))
-  })
-  return tick
-}
-
-type StatSeg = { text: string; color: string | undefined }
-type Translate = ReturnType<typeof createT>
-/**
- * 显示样式注册表：输入框右侧实时行与下方提示栏各自独立，可自由组合。
- * 新增样式只在此追加一项，类型、设置菜单选项、KV 校验自动跟随。
- * 仍需手动补充：对应渲染分支 + i18n 四张表的样式文案。
- * 实时行 default = "首字 X.XXs · 速度 … tok/s"；dsh = "首 Token X.XXs · … tok/s"
- * （DeepSeek harness）；min = "X.XXs · … tok/s"（无标签）。
- * 提示栏 default = "命中率 … · 速度 …"；min = "… · …"（无标签）。
- */
-const LIVE_STYLES = [
-  { id: "default", labelKey: "styleDefault" },
-  { id: "dsh",     labelKey: "styleDsh" },
-  { id: "min",     labelKey: "styleMin" },
-] as const satisfies readonly { id: string; labelKey: keyof Translation }[]
-type LiveStyle = (typeof LIVE_STYLES)[number]["id"]
-
-const BAR_STYLES = [
-  { id: "default", labelKey: "styleDefault" },
-  { id: "min",     labelKey: "styleMin" },
-] as const satisfies readonly { id: string; labelKey: keyof Translation }[]
-type BarStyle = (typeof BAR_STYLES)[number]["id"]
-
-// 流式实时估算的着色分段（PromptRightStatus 专用；侧边栏「性能」为精确口径，
-// 无实时行）：prefill → 首字等待中；streaming → 首字 · 速度(未达守卫则省略)；
-// tool → 工具计时中（速度段隐藏）。
-// 时间统一 fmtSec（始终 X.XXs，三样式一致）；style = "dsh" 额外改用 DeepSeek
-// harness 文案（首 Token / 无「速度」标签）；style = "min" 再去掉全部标签，
-// 只留 "X.XXs · … tok/s"。
-function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined, style: LiveStyle = "default"): StatSeg[] {
-  if (lv.phase === "tool") {
-    const segs: StatSeg[] = []
-    if (style !== "min") segs.push({ text: t("barTool") + " ", color: muted })
-    segs.push({ text: fmtSec(lv.toolMs) + "\u2026", color: text })
-    return segs
-  }
-  const dsh = style === "dsh"
-  const min = style === "min"
-  const label = dsh ? t("barFirstToken") : t("barTTFT")
-  if (lv.phase === "prefill") {
-    return min
-      ? [{ text: fmtSec(lv.waitMs) + "\u2026", color: text }]
-      : [
-          { text: label + " ", color: muted },
-          { text: fmtSec(lv.waitMs) + "\u2026", color: text },
-        ]
-  }
-  const segs: StatSeg[] = min
-    ? [{ text: fmtSec(lv.ttft), color: text }]
-    : [
-        { text: label + " ", color: muted },
-        { text: fmtSec(lv.ttft), color: text },
-      ]
-  if (lv.tps !== null) {
-    segs.push({ text: dsh || min ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: muted })
-    segs.push({ text: lv.tps.toFixed(1) + " " + t("tokS"), color: text })
-  }
-  return segs
-}
-
-// ---------------------------------------------------------------------------
-// Balance state
-// ---------------------------------------------------------------------------
-
-interface BalanceState {
-  status: "idle" | "loading" | "ok" | "error"
-  data: BalanceEntry[] | null
-  lastFetch: number
-  error?: string
-  key?: string           // 上次成功/尝试查询所用的 key，用于检测 key 是否更换
-}
-
-const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
-
-/**
- * 将余额从来源币种换算为目标币种。
- * DEFAULT_RATES 以 USD=1 为基准：先折算为 USD，再换算到目标币种。
- */
-function convertBalance(target: string, targetRate: number, amount: number, from: string): number {
-  if (from === target) return amount
-  const fromRate = DEFAULT_RATES[from] ?? 1
-  const usd = from === "USD" ? amount : amount / fromRate
-  return target === "USD" ? usd : usd * targetRate
-}
-
-/**
- * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
- * 匹配复用前缀逻辑：先精确匹配 id，再前缀匹配（如 moonshotai-cn → moonshot）。
- * OpenAI 优先读取 auth.json OAuth；其他 provider 读取 provider.key / provider.options.apiKey。
- * 读取失败或未匹配返回空串。
- */
+/** 从 OpenCode 已认证 provider 读 API key 兜底（先精确后前缀匹配；OpenAI 优先 OAuth）；无则空串。 */
 function readOpenAIOAuthToken(api: TuiPluginApi): string {
   try {
     // OpenAI OAuth credentials are stored separately from provider.key.
@@ -390,11 +82,10 @@ function readOpenAIOAuthToken(api: TuiPluginApi): string {
 function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
   try {
     const provs = api.state.provider as unknown as Array<{ id: string; key?: string; options?: { apiKey?: string } }>
-    // 大小写不敏感：精确匹配 id，否则前缀匹配（如 moonshotai-cn → moonshot）
     const id = provider.id.toLowerCase()
     const hit = provs.find((p) => p.id.toLowerCase() === id) ?? provs.find((p) => p.id.toLowerCase().startsWith(id))
     const isOpenAI = id === "openai"
-    // OAuth token 优先于 provider.key，避免把配置中的占位值当成 access token。
+    // OAuth token 优先于 provider.key，避免把配置占位值当成 access token
     if (isOpenAI) {
       const oauth = readOpenAIOAuthToken(api)
       if (oauth) return oauth
@@ -408,1006 +99,25 @@ function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
   }
 }
 
-/** 货币符号：优先取 /cache-currency 内置映射，未知币种回退为代码。 */
-function balanceSymbol(currency: string): string {
-  const sym = CURRENCIES[currency]
-  return sym ?? currency + " "
-}
-
-/** 紧凑数字缩写（底部状态栏用）：1234 → "1.2K"，1234567 → "1.2M"。 */
-function fmtCompact(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
-  return String(Math.round(n))
-}
-
-/** 余额数值格式化：≥1 或 0 显示固定 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
-function formatBalanceAmount(total: string): string {
-  const n = parseFloat(total)
-  if (!Number.isFinite(n)) return total
-  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
-}
-
-/**
- * 将余额列表格式化为单行文本。
- * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
- */
-function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
-  const custom = list.find((x) => x.display)
-  if (custom?.display) return custom.display
-  const native = pref ? list.find((x) => x.currency === pref) : undefined
-  if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
-  const base = list[0]
-  const baseAmt = parseFloat(base.total)
-  const converted = Number.isFinite(baseAmt)
-    ? convertBalance(pref || base.currency, rate, baseAmt, base.currency)
-    : baseAmt
-  const shown = pref && base.currency !== pref
-    ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-    : formatBalanceAmount(base.total)
-  return balanceSymbol(pref || base.currency) + shown
-}
-
-const BALANCE_DETAIL_LABELS: Record<BalanceDetailKey, keyof Translation> = {
-  plan: "balDetailPlan",
-  used: "balDetailUsed",
-  remaining: "balDetailRemaining",
-  window: "balDetailWindow",
-  reset: "balDetailReset",
-  codeReview: "balDetailCodeReview",
-  credits: "balDetailCredits",
-  resetCredits: "balDetailResetCredits",
-}
-
-// ---------------------------------------------------------------------------
-// Sidebar component
-// ---------------------------------------------------------------------------
-
-/** Signals shared between the TUI component and slash commands.
- *  Created in the `tui` function scope so they do not survive module reload —
- *  the component re-creates them on mount and restores user config from kv. */
-interface PanelSignals {
-  currencySymbol: () => string
-  setCurrencySymbol: (v: string) => void
-  exchangeRate: () => number
-  setExchangeRate: (v: number) => void
-  langCode: () => LangCode
-  setLangCode: (v: LangCode) => void
-  sectionDetail: () => boolean
-  setSectionDetail: (v: boolean) => void
-  sectionModel: () => boolean
-  setSectionModel: (v: boolean) => void
-  sectionDist: () => boolean
-  setSectionDist: (v: boolean) => void
-  sectionSkills: () => boolean
-  setSectionSkills: (v: boolean) => void
-  sectionPerf: () => boolean
-  setSectionPerf: (v: boolean) => void
-  /** 性能统计是否按当前模型过滤（切模型后中位数/最近值不混入其他模型）。 */
-  perfModelFilter: () => boolean
-  setPerfModelFilter: (v: boolean) => void
-  /** 输入框右侧实时行样式。 */
-  liveStyle: () => LiveStyle
-  setLiveStyle: (v: LiveStyle) => void
-  /** 下方提示栏样式。 */
-  barStyle: () => BarStyle
-  setBarStyle: (v: BarStyle) => void
-  sectionBalance: () => boolean
-  setSectionBalance: (v: boolean) => void
-  /** Bottom status bar (prompt hint line) visibility. */
-  sectionBottom: () => boolean
-  setSectionBottom: (v: boolean) => void
-  /** Increment to force a balance re-fetch. */
-  balanceRefresh: () => number
-  setBalanceRefresh: (v: number) => void
-  /** Currently selected balance provider id (e.g. "deepseek"). */
-  balanceProviderId: () => string
-  setBalanceProviderId: (v: string) => void
-  /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
-  autoBalance: () => boolean
-  setAutoBalance: (v: boolean) => void
-  /** True when the session's provider has no balance adapter (auto mode). Suppresses balance polling. */
-  balanceUnsupported: () => boolean
-  setBalanceUnsupported: (v: boolean) => void
-  /** Shared balance query state — single source of truth for sidebar and bottom bar. */
-  balanceState: () => BalanceState
-  /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
-  balanceCurrency: () => string
-  setBalanceCurrency: (v: string) => void
-  borderVisible: () => boolean
-  setBorderVisible: (v: boolean) => void
-  /** When set, the panel renders stats for this session instead of the main one. */
-  overrideSessionId: () => string | undefined
-  setOverrideSessionId: (v: string | undefined) => void
-  /** True while our sidebar panel is mounted — host sidebar is visible (occupies 42 cols). */
-  sidebarVisible: () => boolean
-  setSidebarVisible: (v: boolean) => void
-}
-
-const CURRENCIES: Record<string, string> = {
-  USD: "$", CNY: "¥", EUR: "€", JPY: "JP¥", GBP: "£", KRW: "₩",
-}
-/** Approximate USD exchange rates — used as defaults when switching currency.
- *  Users can override via /cache-rate.  Last updated 2026-05. */
-const DEFAULT_RATES: Record<string, number> = {
-  USD: 1, CNY: 7.2, EUR: 0.92, JPY: 150, GBP: 0.79, KRW: 1350,
-}
-
-const MIN_PANEL_WIDTH = 20
-// part 事件 → data 重算的节流间隔（前沿+尾沿）：重算上限 10Hz，延迟 ≤100ms
-const PART_THROTTLE_MS = 100
-const DEFAULT_PANEL_WIDTH = 26
-
-/** ── layout measurement constants (visual columns) ── */
-const LABEL_GAP = 1        // label（如 "Hit"）后面的空格
-const BAR_BRACKETS = 2     // "[" + "]" 包围进度条
-const BAR_GAP = 1          // "]" 后面的空格
-const PCT_FIXED_WIDTH = 5  // "XX.X%" 固定 5 字符宽度
-const HEADER_PREFIX = 2    // 折叠态标题行：▶/▼ 图标 + 后面的空格
-const UNIT_GAP = 1         // 计量单位前的空格（如 "tok"）
-
-
-function TokenCachePanel(props: {
-  theme: TuiThemeCurrent
-  api: TuiPluginApi
-  sessionId: string
-  signals: PanelSignals
-}): JSX.Element {
-  const [panelWidth, setPanelWidth] = createSignal(DEFAULT_PANEL_WIDTH)
-  const [open, setOpen] = createSignal(true)
-  const [detailOpen, setDetailOpen] = createSignal(true)
-  const [modelOpen, setModelOpen] = createSignal(true)
-  const [distOpen, setDistOpen] = createSignal(false)
-  const [skillsOpen, setSkillsOpen] = createSignal(true)
-  const [perfOpen, setPerfOpen] = createSignal(true)
-  const [balanceOpen, setBalanceOpen] = createSignal(false)
-  let boxEl: any
-
-  // 侧边栏可见性通知：本面板挂载 ⇒ 宿主侧边栏可见（固定占用 42 列输入框宽度）
-  createEffect(() => {
-    props.signals.setSidebarVisible(true)
-    onCleanup(() => props.signals.setSidebarVisible(false))
-  })
-
-  // ── shared signals (de-structured so internal code is unchanged) ──
-  const {
-    currencySymbol, setCurrencySymbol,
-    exchangeRate, setExchangeRate,
-    langCode,
-    sectionDetail, setSectionDetail,
-    sectionModel, setSectionModel,
-    sectionDist, setSectionDist,
-    sectionSkills, setSectionSkills,
-    sectionPerf, setSectionPerf,
-    perfModelFilter, setPerfModelFilter,
-    sectionBalance, setSectionBalance,
-    balanceRefresh,
-    balanceProviderId, setBalanceProviderId,
-    autoBalance, setAutoBalance,
-    balanceUnsupported, setBalanceUnsupported,
-    balanceState,
-    balanceCurrency, setBalanceCurrency,
-    borderVisible, setBorderVisible,
-  } = props.signals
-
-  // ── reactive translation (follows langCode signal) ──
-  const t = createT(() => langCode())
-
-  const formatBalanceDuration = (seconds: number, fallback = ""): string => {
-    if (!Number.isFinite(seconds)) return ""
-    let remaining = Math.max(0, Math.round(seconds))
-    const days = Math.floor(remaining / 86400)
-    remaining %= 86400
-    const hours = Math.floor(remaining / 3600)
-    remaining %= 3600
-    const minutes = Math.floor(remaining / 60)
-    const parts: string[] = []
-    if (days > 0) parts.push(`${days}${t("balDay")}`)
-    if (hours > 0 && parts.length < 2) parts.push(`${hours}${t("balHour")}`)
-    if (minutes > 0 && parts.length < 2) parts.push(`${minutes}${t("balMinute")}`)
-    return parts.join(langCode() === "en" ? " " : "") || fallback
-  }
-
-  const formatBalanceDetailValue = (detail: BalanceDetail): string => {
-    if (detail.value === "unlimited") return t("balUnlimited")
-    if (detail.key !== "reset") return detail.value
-    return formatBalanceDuration(Number(detail.value), t("balResetSoon")) || detail.value
-  }
-
-  const formatBalanceDetailLabel = (detail: BalanceDetail): string => {
-    const label = t(BALANCE_DETAIL_LABELS[detail.key])
-    if (detail.windowSeconds === undefined) return label
-    const window = formatBalanceDuration(detail.windowSeconds)
-    return window ? `${label} (${window})` : label
-  }
-
-  // ── scan session messages reactively ──
-  // SolidJS createMemo re-evaluates whenever the underlying
-  // api.state.session state changes — no event listener needed.
-
-  // ── distribution cache ────────────────────────────────────────
-  // When data() re-computes before api.state.part() is warm (e.g. after
-  // a view switch), hasDistData flips to false and the distribution
-  // block disappears.  Keep the last valid snapshot so the UI stays
-  // stable until the next successful computation arrives.
-  const [lastDist, setLastDist] = createSignal<TokenDist>({
-    system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0,
-    output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0,
-  })
-  const [lastHasDist, setLastHasDist] = createSignal(false)
-
-  // ── performance snapshot ──────────────────────────────────────
-  // 与 dist 相同的防闪烁策略：part() 重新水合前 hasPerf 短暂翻 false；
-  // 保留最近有效性能聚合与 KV 快照让 UI 稳定；lastPerfModelKey 记录快照的
-  // 过滤上下文（null=全局，模型切换后旧快照不复用）。
-  const [lastPerf, setLastPerf] = createSignal<PerfStats>({ ...EMPTY_PERF })
-  const [lastHasPerf, setLastHasPerf] = createSignal(false)
-  const [lastPerfModelKey, setLastPerfModelKey] = createSignal<string | null>(null)
-
-  const [dataSignal, setDataSignal] = createSignal<any>({
-    hitRate: 0, read: 0, write: 0, freshInput: 0, output: 0,
-    cost: 0, saved: 0, model: "", inputRate: 0, cacheReadRate: 0, cacheWriteRate: 0,
-    hasPricing: false, hasData: false, trend: 0, hasTrendData: false,
-    providerName: "", sessionHitRate: 0,
-    dist: { system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0, output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0 },
-    hasDistData: false,
-    perf: { ...EMPTY_PERF },
-    hasPerf: false,
-    perfCtx: "",
-    skills: [] as { name: string; tokens: number }[],
-    hasSkills: false,
-  })
-  const [refreshTick, setRefreshTick] = createSignal(0)
-
-  // 当前 provider 显示名（余额查询状态为共享信号，见 PanelSignals.balanceState）
-  const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
-
-  // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
-  // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
-  // 不依赖 session.model 的响应式更新（模型切换时该链路可能不触发重算）。
-  createEffect(() => {
-    if (!autoBalance()) return
-    const sid = props.signals.overrideSessionId() ?? props.sessionId
-    const msgs = props.api.state.session.messages(sid) as Message[]
-    let pid = ""
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]
-      if (m.role === "assistant" && (m as AssistantMessage).providerID) {
-        pid = (m as AssistantMessage).providerID
-        break
-      }
-    }
-    // 会话尚无 assistant 消息（新会话 / 刚切换模型未对话 / 消息未加载）
-    // → 回退到会话级模型元数据，反映当前正在使用的 provider
-    if (!pid) {
-      try {
-        const session = props.api.state.session.get(sid)
-        pid = session?.model?.providerID ?? ""
-      } catch { /* ignore */ }
-    }
-    if (!pid) return
-    const hit = matchBalanceProvider(pid)
-    if (hit) {
-      setBalanceUnsupported(false)
-      if (hit.id !== balanceProviderId()) {
-        setBalanceProviderId(hit.id)
-        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
-      }
-    } else {
-      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
-      setBalanceUnsupported(true)
-    }
-  })
-
-  // ── auto-clear override when the user navigates to a different main session ──
-  let lastMainSid = props.sessionId
-  createEffect(() => {
-    const sid = props.sessionId
-    if (sid !== lastMainSid) {
-      lastMainSid = sid
-      if (props.signals.overrideSessionId()) {
-        props.signals.setOverrideSessionId(undefined)
-        props.api.kv.set(`${KV_PREFIX}.session`, "")
-      }
-    }
-  })
-
-  createEffect(() => {
-    const sid = props.signals.overrideSessionId() ?? props.sessionId
-    // 双通道驱动：partVersion（part/消息事件）承担高频增量；refreshTick（仅
-    // session.updated）承担 session 级聚合变化。重算成本已由 dist.ts 指纹缓存
-    // 摊平，但节流仍是第一道闸（聚合循环本身 O(消息数)，不必跑在事件频率上）。
-    void refreshTick()
-    void partVersion()
-
-    // 自然追踪 messages 和 provider（SDK 数据就绪时自动重新执行）
-    const msgs = props.api.state.session.messages(sid) as Message[]
-    const session = typeof props.api.state.session.get === "function"
-      ? props.api.state.session.get(sid)
-      : undefined
-
-    // 性能过滤：开关在 effect 外读取（响应式，切换即重算）；上下文键为当前
-    // 模型指纹，空串表示全局不过滤（含开关开启但模型不可知的退化）。
-    const perfFilterOn = props.signals.perfModelFilter()
-    const perfCtxKey = perfFilterOn ? (currentModelKey(props.api, sid) ?? "") : ""
-
-    // 累计值优先使用 Session 聚合字段（数据库级，不受 sync 层 limit:100 截断）
-    // 若字段不存在（旧版本 SDK），降级到消息遍历累加
-    let input  = session?.tokens?.input ?? 0
-    let read   = session?.tokens?.cache?.read ?? 0
-    let write  = session?.tokens?.cache?.write ?? 0
-    let output = session?.tokens?.output ?? 0
-    let cost   = session?.cost ?? 0
-    let pid    = session?.model?.providerID ?? ""
-    let mid    = session?.model?.id ?? ""
-
-    const fallbackTokens = session?.tokens == null
-    const fallbackCost   = session?.cost == null
-    const fallbackModel  = !pid || !mid
-
-    let prevMsgHitRate = -1, lastMsgHitRate = -1
-    for (const msg of msgs) {
-      if (msg.role !== "assistant") continue
-      const tok = (msg as AssistantMessage).tokens; if (!tok) continue
-      const mit = num(tok.input) + num(tok.cache?.read) + num(tok.cache?.write), mrt = num(tok.cache?.read)
-      if (mit > 0) { prevMsgHitRate = lastMsgHitRate; lastMsgHitRate = (mrt / mit) * 100 }
-      if (fallbackTokens) {
-        input += num(tok.input); read += num(tok.cache?.read); write += num(tok.cache?.write); output += num(tok.output)
-      }
-      if (fallbackCost) {
-        cost += num((msg as AssistantMessage).cost)
-      }
-      if (fallbackModel && (msg as AssistantMessage).providerID && (msg as AssistantMessage).modelID) {
-        pid = (msg as AssistantMessage).providerID; mid = (msg as AssistantMessage).modelID
-      }
-    }
-    let saved = 0, inputRate = 0, cacheReadRate = 0, cacheWriteRate = 0
-    if (read > 0 && pid && mid && Array.isArray(props.api.state.provider)) for (const provider of props.api.state.provider) {
-      if (provider.id !== pid) continue
-      const model = provider.models[mid]; if (!model?.cost) continue
-      inputRate = num(model.cost.input); cacheReadRate = num(model.cost.cache?.read); cacheWriteRate = num(model.cost.cache?.write)
-      if (inputRate > cacheReadRate) saved = (read * (inputRate - cacheReadRate)) / 1_000_000
-      break
-    }
-    const hitRate = lastMsgHitRate >= 0 ? lastMsgHitRate : 0
-    // 总命中率分母含缓存写（业界口径：read / (input+read+write)）
-    const freshTotal = input + read + write, sessionHitRate = freshTotal > 0 ? (read / freshTotal) * 100 : 0
-    const model = mid.split("/").pop() ?? mid, hasPricing = inputRate > 0 || cacheReadRate > 0 || cacheWriteRate > 0
-    const hasTrendData = prevMsgHitRate >= 0 && lastMsgHitRate >= 0
-    const trend = hasTrendData ? lastMsgHitRate - prevMsgHitRate : 0, providerName = pid || ""
-
-    // untrack 只包裹已知触发死锁的 API；分布/性能聚合已抽为纯函数，回退快照
-    // 同样只在 untrack 内读取（避免响应式依赖成环）。
-    const distData = untrack(() => {
-      try {
-        const { dist, hasDistData, skills } = collectTokenDist(props.api, msgs, session)
-        const perf = aggregatePerf(props.api, msgs, { modelKey: perfCtxKey || undefined })
-        // 回退快照的有效性取决于过滤上下文：上下文一致时（part() 重新水合等
-        // 瞬态）沿用最近有效快照保持面板稳定；模型切换后上下文变化即不复用。
-        // perfCtxKey ""=全局（null 键）。
-        const snapKey = perfCtxKey || null
-        const fallbackOk = perf.hasPerf || (lastPerfModelKey() === snapKey && lastHasPerf())
-        return {
-          finalDist: hasDistData ? dist : lastDist(), finalHasDist: hasDistData || lastHasDist(),
-          finalPerf: fallbackOk ? (perf.hasPerf ? perf : lastPerf()) : EMPTY_PERF,
-          finalHasPerf: fallbackOk,
-          perfCtx: perfCtxKey,
-          skills,
-        }
-      } catch {
-        // SDK 形状漂移等意外错误：回落最近一次有效快照，保持面板稳定
-        return {
-          finalDist: lastDist(), finalHasDist: lastHasDist(),
-          finalPerf: lastPerf(), finalHasPerf: lastHasPerf(),
-          perfCtx: "",
-          skills: [] as { name: string; tokens: number }[],
-        }
-      }
-    })
-
-    setDataSignal({
-      hitRate, read, write, freshInput: input, output, cost, saved, model,
-      inputRate, cacheReadRate, cacheWriteRate, hasPricing,
-      hasData: read > 0 || write > 0 || input > 0 || output > 0 || cost > 0,
-      trend, hasTrendData, providerName, sessionHitRate,
-      dist: distData.finalDist, hasDistData: distData.finalHasDist,
-      perf: distData.finalPerf, hasPerf: distData.finalHasPerf,
-      perfCtx: distData.perfCtx,
-      skills: distData.skills, hasSkills: distData.skills.length > 0,
-    })
-  })
-
-  const data = createMemo(() => {
-    return dataSignal()
-  })
-
-  const balanceDetails = createMemo(() => balanceState().data?.find((entry) => entry.details)?.details ?? [])
-
-  // Persist the last valid distribution so that data() can fall back
-  // to it while api.state.part() is re-hydrating after a view switch.
-  // 浅比较去重：内容多数不变时跳过信号写入与 KV 快照（lastDist 读取在 untrack 内）。
-  createEffect(() => {
-    const d = data()
-    if (d.hasDistData && !untrack(() => shallowEqual(lastDist(), d.dist))) {
-      setLastDist({ ...d.dist })
-      setLastHasDist(true)
-      // Also persist across component remounts (view switches)
-      try { props.api.kv.set(`${KV_PREFIX}.dist_snapshot`, { ...d.dist }) } catch {}
-    }
-    if (d.hasPerf && !untrack(() => shallowEqual(lastPerf(), d.perf) && lastPerfModelKey() === (d.perfCtx || null))) {
-      setLastPerf({ ...d.perf })
-      setLastPerfModelKey(d.perfCtx || null)
-      setLastHasPerf(true)
-      // 快照携带过滤上下文：不同模型（或全局⇄过滤）的缓存不互相污染
-      try { props.api.kv.set(`${KV_PREFIX}.perf_snapshot`, { ...d.perf, modelKey: d.perfCtx || null }) } catch {}
-    }
-  })
-
-  // ── token distribution (in-process via api.state.part) ──
-  const [partVersion, setPartVersion] = createSignal(0)
-
-  // Persist fold state to api.kv
-  const persistFold = (key: string, val: boolean) => {
-    try { props.api.kv.set(`${KV_PREFIX}.${key}`, val) } catch {}
-  }
-
-  onMount(() => {
-    // Reset panelWidth on (re)mount so the layout uses a clean
-    // default until onSizeChange measures the live box dimensions.
-    setPanelWidth(DEFAULT_PANEL_WIDTH)
-
-    // Restore fold state from persisted storage (non-critical — fire and forget)
-    try {
-      setOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.open`, false)))
-      setDetailOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.detail`, true)))
-      setModelOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.model`, true)))
-      setDistOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.dist`, false)))
-      setSkillsOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.skills`, true)))
-      setPerfOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.perf`, true)))
-      setBalanceOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.balance.open`, false)))
-    } catch {}
-
-    // Restore user config (currency, rate, section visibility).
-    // Try synchronously first (kv is usually ready on mount), fall back to
-    // polling if the module was reloaded and kv hasn't initialised yet.
-    const doRestore = () => {
-      try {
-        const sym = props.api.kv.get<string>(`${KV_PREFIX}.currency`)
-        const rate = props.api.kv.get<number>(`${KV_PREFIX}.rate`)
-        if (typeof sym === "string") setCurrencySymbol(sym)
-        if (typeof rate === "number" && rate > 0) setExchangeRate(rate)
-        const balCur = props.api.kv.get<string>(`${KV_PREFIX}.balance_currency`)
-        if (typeof balCur === "string") setBalanceCurrency(balCur)
-        // Restore balance provider (fall back to default when unknown)
-        const savedProvider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
-        if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
-          setBalanceProviderId(savedProvider)
-          setBalanceUnsupported(false)
-        }
-        // Restore auto-switch (default on)
-        const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
-        if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
-        // Migrate legacy DeepSeek key (cache_panel.ds_key → cache_panel.balance.deepseek.key)
-        const legacyKey = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
-        if (legacyKey) {
-          const dsKey = props.api.kv.get<string>(`${KV_PREFIX}.balance.deepseek.key`, "")
-          if (!dsKey) props.api.kv.set(`${KV_PREFIX}.balance.deepseek.key`, legacyKey)
-          props.api.kv.set(`${KV_PREFIX}.ds_key`, "")
-        }
-        // 恢复的 provider 可能与默认值不同，强制重新查询
-        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
-        setSectionDetail(Boolean(props.api.kv.get(`${KV_PREFIX}.section.detail`, true)))
-        setSectionModel(Boolean(props.api.kv.get(`${KV_PREFIX}.section.model`, true)))
-        setSectionDist(Boolean(props.api.kv.get(`${KV_PREFIX}.section.dist`, true)))
-        setSectionSkills(Boolean(props.api.kv.get(`${KV_PREFIX}.section.skills`, true)))
-        setSectionPerf(Boolean(props.api.kv.get(`${KV_PREFIX}.section.perf`, true)))
-        setSectionBalance(Boolean(props.api.kv.get(`${KV_PREFIX}.section.balance`, true)))
-        const bv = props.api.kv.get<boolean>(`${KV_PREFIX}.border`, true)
-        setBorderVisible(bv !== false)
-        // Restore distribution snapshot so the token distribution block
-        // doesn't blank out while api.state.part() re-hydrates.
-        const cachedDist = props.api.kv.get<TokenDist>(`${KV_PREFIX}.dist_snapshot`)
-        if (cachedDist) {
-          setLastDist(cachedDist)
-          setLastHasDist(true)
-        }
-        const cachedPerf = props.api.kv.get<PerfStats & { modelKey?: string | null }>(`${KV_PREFIX}.perf_snapshot`)
-        if (cachedPerf) {
-          setLastPerf({ ...EMPTY_PERF, ...cachedPerf })
-          setLastPerfModelKey(cachedPerf.modelKey || null)
-          setLastHasPerf(true)
-        }
-        // Restore performance model-filter preference (default: on)
-        const savedPerfFilter = props.api.kv.get<boolean>(`${KV_PREFIX}.perf_model_filter`, true)
-        setPerfModelFilter(savedPerfFilter !== false)
-      } catch {
-        // kv read failed — signals stay at defaults
-      }
-      // Re-measure panel width after config signals have settled
-      if (boxEl && typeof boxEl.width === "number" && boxEl.width > 0) {
-        setPanelWidth(Math.max(MIN_PANEL_WIDTH, boxEl.width))
-      }
-    }
-
-    if (props.api.kv.ready) {
-      doRestore()
-    } else {
-      // Poll kv.ready with a 1-second timeout to avoid infinite busy-wait
-      // on platforms where kv initialisation may be delayed (Linux single-thread
-      // mode, session switch storms, etc.).
-      const MAX_POLL = 100
-      let tries = 0
-      const pollRestore = () => {
-        if (!props.api.kv.ready) {
-          if (++tries > MAX_POLL) { doRestore(); return }
-          setTimeout(pollRestore, 10)
-          return
-        }
-        doRestore()
-      }
-      pollRestore()
-    }
-
-    // part/msg 事件 → partVersion（前沿+尾沿节流 100ms）：突发流式期间重算
-    // 钳到 ≤10Hz，首事件立即生效；refreshTick 仅由 session.updated 驱动
-    // （session 聚合 tokens/model 变化，step 级频率，不构成热点）。
-    const bumper = createThrottledBumper(() => setPartVersion((v) => v + 1), PART_THROTTLE_MS)
-    const unsubPart = props.api.event.on("message.part.updated", bumper.bump)
-    const unsubMsg = props.api.event.on("message.updated", bumper.bump)
-    const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
-    setRefreshTick(v => v + 1)
-    onCleanup(() => { bumper.dispose(); unsubPart(); unsubMsg(); unsubSession() })
-  })
-
-  // ── colours ──
-  // Pull from the current theme, auto-desaturate if too punchy,
-  // fall back to Morandi when a key is missing from the theme.
-  const pal = createMemo(() => {
-    const t = props.theme as Record<string, unknown>
-    const sat = (k: string, fb: string) => desaturateTo(t[k], MAX_SAT, fb)
-    return {
-      primary:   sat("primary",   FALLBACK.primary),
-      text:      sat("text",      FALLBACK.text),
-      muted:     sat("textMuted", FALLBACK.muted),
-      success:   sat("success",   FALLBACK.success),
-      warning:   sat("warning",   FALLBACK.warning),
-      error:     sat("error",     FALLBACK.error),
-      border:    sat("border",    FALLBACK.border),
-    }
-  })
-
-  const hitColor = createMemo(() => {
-    const r = data().hitRate
-    if (r >= 85) return pal().success
-    if (r >= 70) return pal().warning
-    return pal().error
-  })
-
-  /** Horizontal space eaten by border (1+1 when visible) + padding (2+2 when visible). */
-  const gutter = createMemo(() => borderVisible() ? 6 : 0)
-
-  const sep = createMemo(() => "\u2500".repeat(Math.max(1, panelWidth() - gutter())))
-  function trendLabel(t: number): string {
-    // |t| < 0.05 视为无变化：避免显示 "↑0.0%" 的矛盾（箭头存在但数值截断为零）
-    if (Math.abs(t) < 0.05) return "-"
-    return (t > 0 ? "\u2191" : "\u2193") + Math.abs(t).toFixed(1) + "%"
-  }
-
-  const barW = createMemo(() => {
-    const trendSpace = data().hasTrendData ? LABEL_GAP + visualWidth(trendLabel(data().trend)) : 0
-    const overhead = visualWidth(t("hit")) + LABEL_GAP + BAR_BRACKETS + BAR_GAP + PCT_FIXED_WIDTH + trendSpace + gutter()
-    return Math.max(3, panelWidth() - overhead)
-  })
-  const bar = createMemo(() => progressBar(data().hitRate, barW()))
-  const pct = createMemo(() => (Math.floor(data().hitRate * 10) / 10).toFixed(1) + "%")
-
-  // When border visibility changes the box dimensions shift, which
-  // may not reliably trigger onSizeChange across (re)mount cycles.
-  // Force panelWidth to resync with the live box after every change.
-  createEffect(() => {
-    borderVisible()
-    if (boxEl && typeof boxEl.width === "number" && boxEl.width > 0) {
-      const w = Math.max(MIN_PANEL_WIDTH, boxEl.width)
-      setPanelWidth((prev) => (prev === w ? prev : w))
-    }
-  })
-
-  // left-align label, right-align value — auto-fill space between
-  const justify = (label: string, value: string, unit = ""): string => {
-    const gauge = panelWidth() - gutter()
-    const used = visualWidth(label) + visualWidth(value) + (unit ? visualWidth(unit) + UNIT_GAP : 0)
-    const gap = Math.max(1, gauge - used)
-    return label + " ".repeat(gap) + value + (unit ? " " + unit : "")
-  }
-
-  // ── performance rows ──
-  // 每行 "标签: 最近值 (中 中位数)"，仅精确口径（请求结束后随精确数据刷新）；
-  // 面板过窄放不下中位段时自动省略，保证标签与最近值始终完整显示。
-  const perfRow = (label: string, lastStr: string, medStr: string | null): string => {
-    const gauge = panelWidth() - gutter()
-    let value = lastStr
-    if (medStr) {
-      const suffix = " (" + medStr + ")"
-      if (visualWidth(label) + visualWidth(lastStr + suffix) + 1 <= gauge) {
-        value = lastStr + suffix
-      }
-    }
-    return justify(label, value)
-  }
-
-  // 延迟行：单次请求完成后才有值
-  const latRow = createMemo<string | null>(() => {
-    const p = data().perf
-    if (p.latLast === null) return null
-    return perfRow(t("perfLat"), fmtMs(p.latLast),
-      p.latMed !== null ? t("perfAvg", { v: fmtMs(p.latMed) }) : null)
-  })
-
-  const perfRows = createMemo<string[]>(() => {
-    const p = data().perf
-    if (!p.hasPerf) return []
-    const rows: string[] = []
-    if (p.ttftLast !== null) {
-      rows.push(perfRow(t("perfTTFT"), fmtMs(p.ttftLast),
-        p.ttftMed !== null ? t("perfAvg", { v: fmtMs(p.ttftMed) }) : null))
-    }
-    if (p.tpsLast !== null) {
-      rows.push(perfRow(t("perfTPS"), p.tpsLast.toFixed(1) + " " + t("tokS"),
-        p.tpsMed !== null ? t("perfAvg", { v: p.tpsMed.toFixed(1) }) : null))
-    }
-    const lr = latRow()
-    if (lr) rows.push(lr)
-    return rows
-  })
-
-  const balanceHeader = () => {
-    const arrow = balanceDetails().length > 0 ? (balanceOpen() ? "\u25bc " : "\u25b6 ") : ""
-    const title = t("secBalance")
-    const summary = balanceState().data ? formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()) : ""
-    const gauge = panelWidth() - gutter()
-    const dividerLength = Math.max(1, gauge - visualWidth(arrow + title) - visualWidth(summary) - 1)
-    return { arrow, title, summary, divider: sep().slice(0, dividerLength) }
-  }
-
-  return (
-    <box
-      border={borderVisible()}
-      {...(borderVisible() ? { borderColor: pal().border } : {})}
-      paddingTop={0}
-      paddingBottom={0}
-      paddingLeft={borderVisible() ? 2 : 0}
-      paddingRight={borderVisible() ? 2 : 0}
-      flexDirection="column"
-      gap={0}
-      ref={boxEl}
-      onSizeChange={() => {
-        // boxEl.width may be undefined before the first measurement — guard with 0
-        const w = boxEl ? Math.max(MIN_PANEL_WIDTH, boxEl.width ?? 0) : DEFAULT_PANEL_WIDTH
-        setPanelWidth((prev) => (prev === w ? prev : w))
-      }}
-    >
-      {/* collapsible header */}
-      <text onMouseUp={() => setOpen((o) => { const n = !o; persistFold("open", n); return n })}>
-        <span style={{ fg: pal().muted }}>{open() ? "\u25bc " : "\u25b6 "}</span>
-        <span style={{ fg: pal().primary }}>
-            <b>{t("title")}</b>
-            <Show when={open()}>
-              <span style={{ fg: dimColor(pal().muted, 0.75) }}> v{PLUGIN_VERSION}</span>
-            </Show>
-          </span>
-        <Show when={!open() && data().hasData}>
-          <Show when={data().hasTrendData}>
-            <span>
-              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t("title")) - visualWidth(pct() + " " + t("hitFolded") + " " + trendLabel(data().trend))))}
-            </span>
-            <span style={{ fg: hitColor() }}>{pct()} {t("hitFolded")}</span>
-            <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
-              {" "}{trendLabel(data().trend)}
-            </span>
-          </Show>
-          <Show when={!data().hasTrendData}>
-            <span>
-              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t("title")) - visualWidth(pct() + " " + t("hitFolded"))))}
-            </span>
-            <span style={{ fg: hitColor() }}>{pct()} {t("hitFolded")}</span>
-          </Show>
-        </Show>
-      </text>
-
-      <Show when={open()}>
-        <Show when={props.signals.overrideSessionId()}>
-          {(() => {
-            const prefix = "  \u21b3 " + t("subPrefix")
-            const maxSidW = Math.max(6, panelWidth() - visualWidth(prefix))
-            return (
-              <text>
-                <span style={{ fg: pal().muted }}>{prefix}</span>
-                <span style={{ fg: pal().text }}>{truncateVisual(props.signals.overrideSessionId()!, maxSidW)}</span>
-              </text>
-            )
-          })()}
-        </Show>
-        <Show when={data().hasData} fallback={
-          <>
-            <text fg={pal().muted}>{sep()}</text>
-            <text>
-              <span style={{ fg: pal().muted }}>{"> "}</span>
-              <span style={{ fg: pal().muted }}>{t("noData")}</span>
-            </text>
-          </>
-        }>
-          <text fg={pal().muted}>{sep()}</text>
-
-          {/* hit rate + bar — inline to avoid box spacing */}
-          <text>
-            <span style={{ fg: pal().text }}>{t("hit")} </span>
-            <span style={{ fg: hitColor() }}>[{bar()}] </span>
-            <span style={{ fg: pal().text }}>{pct()}</span>
-            <Show when={data().hasTrendData}>
-              <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
-                {" "}{trendLabel(data().trend)}
-              </span>
-            </Show>
-          </text>
-
-          {/* session cumulative hit rate */}
-          <text fg={pal().muted}>
-            {justify(t("totalHit"), (Math.floor(data().sessionHitRate * 10) / 10).toFixed(1) + "%")}
-          </text>
-
-          {/* ── detail section (collapsible, default open) ── */}
-          <Show when={sectionDetail()}>
-          <text onMouseUp={() => setDetailOpen((o) => { const n = !o; persistFold("detail", n); return n })}>
-            <span style={{ fg: pal().muted }}>{detailOpen() ? "\u25bc " : "\u25b6 "}</span>
-            <span style={{ fg: pal().primary }}><b>{t("secDetail")}</b></span>
-            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((detailOpen() ? "\u25bc " : "\u25b6 ") + t("secDetail")))}</span>
-          </text>
-
-          <Show when={detailOpen()}>
-            <Show when={data().read > 0}>
-              <text fg={pal().muted}>
-                {justify(t("read"),  fmt(data().read),         t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().write > 0}>
-              <text fg={pal().muted}>
-                {justify(t("write"), fmt(data().write),        t("tok"))}
-              </text>
-            </Show>
-            {/* 未命中 = 新鲜输入 + 缓存写（两者都未从缓存命中） */}
-            <text fg={pal().muted}>
-              {justify(t("miss"),  fmt(data().freshInput + data().write), t("tok"))}
-            </text>
-            <text fg={pal().muted}>
-              {justify(t("out"),   fmt(data().output),       t("tok"))}
-            </text>
-            {/* 本回合多次 API 调用时才显示调用次数与末次成本（单次调用不占行） */}
-            <Show when={data().dist.stepCount >= 2}>
-              <text fg={pal().muted}>
-                {justify(t("stepsCount", { n: data().dist.stepCount }), fmtCost(data().dist.stepCost, currencySymbol(), exchangeRate()))}
-              </text>
-            </Show>
-            <Show when={data().saved > 0}>
-              <text>
-                <span style={{ fg: pal().muted }}>{t("saved")}</span>
-                <span>{" ".repeat(Math.max(1, panelWidth() - gutter() - visualWidth(t("saved")) - visualWidth("~" + fmtCost(data().saved, currencySymbol(), exchangeRate()))))}</span>
-                <span style={{ fg: pal().success }}>~{fmtCost(data().saved, currencySymbol(), exchangeRate())}</span>
-              </text>
-            </Show>
-          </Show>
-          </Show>
-
-          {/* ── performance: TTFT / TPS / latency (collapsible, default open) ── */}
-          <Show when={sectionPerf()}>
-          <Show when={data().hasPerf}>
-            {<text onMouseUp={() => setPerfOpen((o) => { const n = !o; persistFold("perf", n); return n })}>
-              <span style={{ fg: pal().muted }}>{perfOpen() ? "\u25bc " : "\u25b6 "}</span>
-              <span style={{ fg: pal().primary }}><b>{t("secPerf")}</b></span>
-              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((perfOpen() ? "\u25bc " : "\u25b6 ") + t("secPerf")))}</span>
-            </text>}
-            <Show when={perfOpen()}>
-              <For each={perfRows()}>
-                {(row) => <text fg={pal().muted}>{row}</text>}
-              </For>
-            </Show>
-          </Show>
-          </Show>
-
-          {/* ── model section (collapsible, default open) ── */}
-          <Show when={sectionModel()}>
-          {<text onMouseUp={() => setModelOpen((o) => { const n = !o; persistFold("model", n); return n })}>
-            <span style={{ fg: pal().muted }}>{modelOpen() ? "\u25bc " : "\u25b6 "}</span>
-            <span style={{ fg: pal().primary }}><b>{t("secModel")}</b></span>
-            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((modelOpen() ? "\u25bc " : "\u25b6 ") + t("secModel")))}</span>
-          </text>}
-
-          <Show when={modelOpen()}>
-            <text fg={pal().text}>
-              {justify(t("cost"),  fmtCost(data().cost, currencySymbol(), exchangeRate()))}
-            </text>
-            <Show when={data().providerName}>
-              <text fg={pal().muted}>
-                {justify(t("provider"), data().providerName)}
-              </text>
-            </Show>
-            <text fg={pal().muted}>
-              {justify(t("model"), data().model)}
-            </text>
-            <Show when={data().hasPricing}>
-              <text fg={pal().muted}>
-                {justify(t("rate"), currencySymbol() + (data().inputRate * exchangeRate()).toFixed(2) + "/M " + t("inputRate"))}
-              </text>
-              <Show when={data().cacheReadRate > 0}>
-                <text fg={pal().muted}>
-                  {justify("", currencySymbol() + (data().cacheReadRate * exchangeRate()).toFixed(2) + "/M " + t("cacheRate"))}
-                </text>
-              </Show>
-              <Show when={data().cacheWriteRate > 0}>
-                <text fg={pal().muted}>
-                  {justify("", currencySymbol() + (data().cacheWriteRate * exchangeRate()).toFixed(2) + "/M " + t("writeRate"))}
-                </text>
-            </Show>
-          </Show>
-          </Show>
-        </Show>
-
-          {/* ── token distribution (collapsible, default closed) ── */}
-          <Show when={sectionDist()}>
-          <Show when={data().hasDistData}>
-            {<text onMouseUp={() => setDistOpen((o) => { const n = !o; persistFold("dist", n); return n })}>
-              <span style={{ fg: pal().muted }}>{distOpen() ? "\u25bc " : "\u25b6 "}</span>
-              <span style={{ fg: pal().primary }}><b>{t("distTitle")}</b></span>
-              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((distOpen() ? "\u25bc " : "\u25b6 ") + t("distTitle")))}</span>
-            </text>}
-            <Show when={distOpen()}>
-            <Show when={data().dist.system > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distSys"), fmt(data().dist.system), t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().dist.user > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distUser"), fmt(data().dist.user), t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().dist.agent > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distAgent"), fmt(data().dist.agent), t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().dist.toolCall > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distTool"), fmt(data().dist.toolCall), t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().dist.toolResult > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distRes"), fmt(data().dist.toolResult), t("tok"))}
-              </text>
-            </Show>
-            <Show when={data().dist.reasoning > 0}>
-              <text fg={pal().muted}>
-                {justify(t("distReason"), fmt(data().dist.reasoning), t("tok"))}
-              </text>
-            </Show>
-            </Show>
-          </Show>
-          </Show>
-
-          {/* ── loaded skills (collapsible, default open) ── */}
-          <Show when={sectionSkills()}>
-          <Show when={data().hasSkills}>
-            {<text onMouseUp={() => setSkillsOpen((o) => { const n = !o; persistFold("skills", n); return n })}>
-              <span style={{ fg: pal().muted }}>{skillsOpen() ? "\u25bc " : "\u25b6 "}</span>
-              <span style={{ fg: pal().primary }}><b>{t("secSkills")}</b></span>
-              <span style={{ fg: pal().muted }}> ({data().skills.length})</span>
-              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((skillsOpen() ? "\u25bc " : "\u25b6 ") + t("secSkills") + ` (${data().skills.length})`))}</span>
-            </text>}
-            <Show when={skillsOpen()}>
-                {data().skills.map((sk: { name: string; tokens: number }) => {
-                  const rightW = visualWidth(fmt(sk.tokens)) + UNIT_GAP + visualWidth(t("tok"))
-                  const maxLabel = Math.max(4, panelWidth() - gutter() - rightW - 1)
-                  const label = truncateVisual(sk.name, maxLabel)
-                  return (
-                    <text fg={pal().muted}>
-                      {justify(label, fmt(sk.tokens), t("tok"))}
-                    </text>
-                  )
-                })}
-            </Show>
-          </Show>
-          </Show>
-
-          {/* ── provider balance (single line) ── */}
-          <Show when={sectionBalance()}>
-            <Show when={balanceUnsupported()}>
-              <text fg={pal().muted}>
-                <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t("balUnsupported")}</span>
-              </text>
-            </Show>
-            <Show when={!balanceUnsupported()}>
-              <Show when={balanceState().status === "idle"}>
-                <text fg={pal().muted}>
-                  <span style={{ fg: pal().muted }}>{"> "}</span>
-                  <span>{t("balNoKey", { p: providerName() })}</span>
-                </text>
-              </Show>
-              <Show when={balanceState().status === "loading"}>
-                <text fg={pal().muted}>
-                  <span style={{ fg: pal().muted }}>{"> "}</span>
-                  <span>{t("balLoading")}</span>
-                </text>
-              </Show>
-              <Show when={balanceState().status === "error"}>
-                <text fg={pal().error}>
-                  <span style={{ fg: pal().muted }}>{"> "}</span>
-                  <span>{(() => {
-                    const code = balanceState().error
-                    if (code === "401") return t("balErr401")
-                    if (code === "403") return t("balErr403")
-                    if (code === "EMPTY") return t("balErrEmpty")
-                    if (code === "TIMEOUT") return t("balErrTimeout")
-                    return t("balError") + (code ? ` (${code})` : "")
-                  })()}</span>
-                </text>
-              </Show>
-              <Show when={balanceState().status === "ok" && balanceState().data}>
-                <Show when={balanceDetails().length > 0}>
-                  <text fg={pal().text} onMouseUp={() => {
-                    const next = !balanceOpen()
-                    setBalanceOpen(next)
-                    persistFold("balance.open", next)
-                  }}>
-                    <span style={{ fg: pal().muted }}>{balanceHeader().arrow}</span>
-                    <span style={{ fg: pal().primary }}><b>{balanceHeader().title}</b></span>
-                    <span style={{ fg: pal().muted }}>{balanceHeader().divider}</span>
-                    <span>{" " + balanceHeader().summary}</span>
-                  </text>
-                  <Show when={balanceOpen()}>
-                    {balanceDetails().map((detail) => (
-                      <text fg={pal().muted}>
-                        {justify(formatBalanceDetailLabel(detail) + ":", formatBalanceDetailValue(detail))}
-                      </text>
-                    ))}
-                  </Show>
-                </Show>
-                <Show when={balanceDetails().length === 0}>
-                  <text fg={pal().muted}>{sep()}</text>
-                  <text fg={pal().text}>
-                    {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
-                  </text>
-                </Show>
-              </Show>
-            </Show>
-          </Show>
-        </Show>
-      </Show>
-    </box>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Plugin entry
 // ---------------------------------------------------------------------------
 
-/**
- * 路径截断的固定开销（列数）：仅宿主布局常量，不含任何内容宽度——
- * 统计宽度、宿主 usage、commands 快捷键均为运行时动态计算。
- * - marginLeft=1 + space-between 余量 ≈ 2 列
- */
+/** 当前会话 ID（route 为 session 时）；非会话视图返回空串。自动切换余额 provider 用。 */
+function currentSessionIdV1(api: TuiPluginApi): string {
+  try {
+    const rt = api.route.current
+    if (rt?.name === "session" && rt.params) return String(rt.params.sessionID ?? "")
+  } catch { /* ignore */ }
+  return ""
+}
+
+/** 路径截断的固定布局开销（列数；marginLeft=1 + space-between 余量）。 */
 const PATH_CHROME = 2
-/**
- * 路径可用宽度低于此列数时整体隐藏（极窄终端下路径信息价值太低，
- * 残留的 "E:\Work…" 反而挤压右侧统计与 commands，直接让位更干净）。
- */
+/** 路径可用宽度低于此列数时整体隐藏（极窄下让位给统计与 commands）。 */
 const HIDE_PATH_BELOW = 14
 
-/**
- * 从宿主 keymap 动态读取命令的快捷键显示文本（与宿主 Prompt 同源），
- * 取不到时回退到传入的默认文本。
- */
+/** 从宿主 keymap 读取命令快捷键显示文本（与宿主 Prompt 同源），取不到回退默认值。 */
 function keyShortcut(api: TuiPluginApi, command: string, fallback: string): string {
   try {
     const binds = api.tuiConfig.keybinds.get(command)
@@ -1420,43 +130,22 @@ function keyShortcut(api: TuiPluginApi, command: string, fallback: string): stri
 }
 
 /**
- * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · TPS
- * （min 样式下省略「命中率 / 速度」标签，仅保留数值与趋势箭头）。
- * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
- * 统计信息与路径同行显示在中间位置。
+ * 输入框 hint 行（session_prompt 的 hint）：路径 · 命中率 · TPS（min 样式去标签）。
+ * 经 ui.Prompt 的 hint prop 注入，宿主右侧 token/commands 提示自动保留。
  */
 function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
   const t = createT(() => props.signals.langCode())
 
   const sid = props.sessionId
 
-  // ── 命中率（单条口径：最后两条有 token 的 assistant 消息）──
+  // ── 命中率 + 用量（口径见 src/stats.ts，与侧边栏/V2 底栏同源）──
   const stats = createMemo(() => {
     const id = sid
     if (!id) return null
-    const msgs = props.api.state.session.messages(id) as Message[]
-    // 从后往前取最后两条有 token 数据的 assistant 消息 → 单条命中率 + 趋势
-    // 分母含缓存写（业界口径：read / (input+read+write)）
-    let hitRate = -1, prevHitRate = -1
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]
-      if (m.role !== "assistant") continue
-      const tk = (m as AssistantMessage).tokens
-      if (!tk) continue
-      const mit = num(tk.input) + num(tk.cache?.read) + num(tk.cache?.write)
-      const mrt = num(tk.cache?.read)
-      if (mit <= 0) continue
-      const rate = (mrt / mit) * 100
-      if (hitRate < 0) { hitRate = rate; continue }
-      prevHitRate = rate
-      break
-    }
-    return { hitRate, prevHitRate }
+    return collectUsageBySession(props.api, id)
   })
 
-  // ── last TPS (same source as sidebar) ──
-  // 从后往前找最近一条能产出有效性能样本的 assistant 消息，采样走
-  // computePerfSample 唯一实现；性能过滤开启时跳过非当前模型样本。
+  // ── 最近精确 TPS（computePerfSample 唯一采样；过滤开启时跳过非当前模型）──
   const lastTps = createMemo(() => {
     const id = sid
     if (!id) return null
@@ -1475,35 +164,24 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return null
   })
 
-  // 余额查询状态为共享信号（PanelSignals.balanceState），由 tui() 统一轮询
-
-  // 自动切换 provider（跟随当前会话模型；幂等，与侧边栏共享信号）
-  createEffect(() => {
-    if (!props.signals.autoBalance()) return
-    const id = sid
-    if (!id) return
-    const msgs = props.api.state.session.messages(id) as Message[]
-    let pid = ""
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]
-      if (m.role === "assistant" && (m as AssistantMessage).providerID) { pid = (m as AssistantMessage).providerID; break }
-    }
-    if (!pid) {
-      try { pid = props.api.state.session.get(id)?.model?.providerID ?? "" } catch {}
-    }
-    if (!pid) return
-    const hit = matchBalanceProvider(pid)
-    if (hit) {
-      props.signals.setBalanceUnsupported(false)
-      if (hit.id !== props.signals.balanceProviderId()) {
-        props.signals.setBalanceProviderId(hit.id)
-        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
-      }
-    } else {
-      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
-      props.signals.setBalanceUnsupported(true)
-    }
+  // ── 会话累计 tokens（tokens 段开启时显示）──
+  const tokTotal = createMemo(() => {
+    const s = stats()
+    if (!s) return null
+    const total = s.input + s.read + s.write
+    return total > 0 ? total : null
   })
+
+  // ── 余额文本（共享 balanceState，与侧边栏同源）──
+  const balanceText = createMemo(() => {
+    const st = props.signals.balanceState()
+    if (st.status === "ok" && st.data) return formatBalanceText(st.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
+    if (st.status === "loading") return "\u2026"
+    if (st.status === "error") return "\u26a0"
+    return "-"
+  })
+
+  // 余额轮询与自动切换 provider 都在 tui() 常驻层（见 src/balance.ts），与侧栏挂载无关
 
   // ── 主题色（与侧边栏同口径）──
   const pal = createMemo(() => {
@@ -1538,50 +216,68 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     try { return props.api.state.path.directory } catch { return "" }
   })
 
-  // 终端宽度信号：初始读取渲染器，窗口 resize 时更新（宿主不约束 hint 行宽度，
-  // 路径截断必须基于终端宽度手动计算）。
-  // CliRenderer 继承的 EventEmitter 因项目未装 @types/node 类型不可见，
-  // 用最小接口声明补齐 resize 事件的 on/off。
+  // 终端宽度信号：resize 事件更新（宿主不约束 hint 行宽，路径截断按终端宽手算）。
+  // ResizeEmitter：项目未装 @types/node，CliRenderer 继承的 EventEmitter 类型不可见的最小声明。
   interface ResizeEmitter {
     on(event: "resize", cb: () => void): unknown
     off(event: "resize", cb: () => void): unknown
   }
   const [termW, setTermW] = createSignal(props.api.renderer.terminalWidth)
-  // resize 事件（主通道）；事件接口若在插件环境不可用则跳过，由轮询兜底
+  // resize 事件为主通道；接口不可用时退化为 1s 轮询兜底（值不变不触发更新）
   createEffect(() => {
     const r = props.api.renderer as unknown as ResizeEmitter
-    if (typeof r.on !== "function" || typeof r.off !== "function") return
-    const onResize = () => setTermW(props.api.renderer.terminalWidth)
-    r.on("resize", onResize)
-    onCleanup(() => r.off("resize", onResize))
-  })
-  // 轮询兜底：事件通道若在插件环境不可用，定期同步终端宽度（值不变时不触发更新）
-  createEffect(() => {
-    const timer = setInterval(() => setTermW(props.api.renderer.terminalWidth), 500)
+    const hasEvent = typeof r.on === "function" && typeof r.off === "function"
+    if (hasEvent) {
+      const onResize = () => setTermW(props.api.renderer.terminalWidth)
+      r.on("resize", onResize)
+      onCleanup(() => r.off("resize", onResize))
+      return
+    }
+    const timer = setInterval(() => setTermW(props.api.renderer.terminalWidth), 1000)
     onCleanup(() => clearInterval(timer))
   })
 
-  // 统计部分分段（单一数据源）：量宽拼接 text，渲染逐段着色，避免双源漂移。
-  // 仅精确口径（命中率 + 趋势 + TPS）；流式实时估算在输入框行右侧显示。
-  // 提示栏样式为 min 时去掉「命中率 / 速度」标签，仅保留数值与趋势箭头。
+  // 统计分段（单一数据源，渲染逐段着色）：各段 /cache-bar 独立开关；min 样式去标签。
   const statsSegs = createMemo<StatSeg[]>(() => {
     const s = stats()
-    const hr = s && s.hitRate >= 0 ? (Math.floor(s.hitRate * 10) / 10).toFixed(1) + "%" : "--"
     const plain = props.signals.barStyle() === "min"
     const segs: StatSeg[] = []
-    if (!plain) segs.push({ text: t("barHit") + " ", color: pal().muted })
-    segs.push({ text: hr, color: hitColor() })
-    const tr = trend()
-    if (tr !== null) {
-      segs.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
+    // 段间分隔符：仅当已有内容时插入，避免关闭首段后出现前导「·」
+    const sep = () => { if (segs.length) segs.push({ text: " \u00b7 ", color: pal().muted }) }
+    // 无数据（新会话）时省略命中率段，避免「命中率 --」占位（与 V2 底栏统一；
+    // hint 行左侧路径不受影响，照常显示）
+    if (props.signals.barShowHit() && s && s.hitRate >= 0) {
+      const hr = (Math.floor(s.hitRate * 10) / 10).toFixed(1) + "%"
+      if (!plain) segs.push({ text: t("barHit") + " ", color: pal().muted })
+      segs.push({ text: hr, color: hitColor() })
+      const tr = trend()
+      if (tr !== null) {
+        segs.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
+      }
     }
-    const tps = lastTps()
-    if (tps !== null) {
-      segs.push({ text: plain ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: pal().muted })
-      segs.push({ text: tps.toFixed(1) + " " + t("tokS"), color: pal().text })
+    if (props.signals.barShowTokens()) {
+      const total = tokTotal()
+      if (total !== null) {
+        sep()
+        if (!plain) segs.push({ text: t("barTok") + " ", color: pal().muted })
+        segs.push({ text: fmtCompact(total), color: pal().text })
+      }
     }
-    // 末尾分隔符：hint 会被宿主在同一行拼接 context/cost 文字（如 "129.6K (13%) · $0.41"）
-    segs.push({ text: " \u00b7 ", color: pal().muted })
+    if (props.signals.barShowSpeed()) {
+      const tps = lastTps()
+      if (tps !== null) {
+        sep()
+        if (!plain) segs.push({ text: t("barTPS") + " ", color: pal().muted })
+        segs.push({ text: tps.toFixed(1) + " " + t("tokS"), color: pal().text })
+      }
+    }
+    if (props.signals.barShowBalance() && !props.signals.balanceUnsupported()) {
+      sep()
+      if (!plain) segs.push({ text: t("barBal") + " ", color: pal().muted })
+      segs.push({ text: balanceText(), color: pal().text })
+    }
+    // 末尾分隔符：宿主会在同行拼接 context/cost 文字
+    if (segs.length) segs.push({ text: " \u00b7 ", color: pal().muted })
     return segs
   })
   const statsW = createMemo(() => {
@@ -1590,12 +286,9 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return w
   })
 
-  // 宿主右侧 usage 文本复刻（1.18.16 Prompt 口径）：
-  // 最后一条 output>0 的 assistant 消息 → tokens 合计格式化 + 模型 context limit 百分比 + session 累计费用
-  // 注意：这里仅用于估算右侧占用宽度（路径截断），并非真实渲染。
-  // 硬编码了宿主格式（"129.6K (13%) · $0.41"）与快捷键文案（"ctrl+p commands"），
-  // opencode 升级若改动 Prompt 右侧渲染格式，需同步维护此复刻口径，否则路径截断宽度会漂移
-  // （有 truncateVisual 兜底，仅轻微错位、不会崩溃）。
+  // 宿主右侧 usage 文本复刻（1.18.16 Prompt 口径，仅用于估算宽度而非渲染）：
+  // 最后一条 output>0 的 assistant → tokens 合计 + context 百分比 + 费用。
+  // 硬编码宿主格式；宿主升级若改渲染需同步，否则路径截断漂移（truncateVisual 兜底）。
   const sessionCost = createMemo(() => {
     try { return num(props.api.state.session.get(sid)?.cost) } catch { return 0 }
   })
@@ -1626,8 +319,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return cost > 0 ? context + " \u00b7 " + fmtCost(cost) : context
   })
 
-  // 宿主 1513 行右侧文本：usage（有数据）或 "快捷键 agents"（无数据）+ commands，
-  // 快捷键从宿主 keymap 动态读取
+  // 宿主右侧文本：usage（有数据）或 "快捷键 agents" + commands，快捷键动态读取
   const rightText = createMemo(() => {
     const cmds = keyShortcut(props.api, "command.palette.show", "ctrl+p") + " commands"
     const u = usageText()
@@ -1636,12 +328,10 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   })
   const rightW = createMemo(() => visualWidth(rightText()))
 
-  // 输入框实际宽度 = 终端宽度 - 侧边栏(可见时 42) - 边距 4
-  // （与宿主 session 布局 contentWidth 口径一致；侧边栏可见性由本面板挂载状态驱动）
+  // 输入框宽度 = 终端宽 - 侧边栏(可见时 42) - 4（与宿主 session 布局 contentWidth 口径一致）
   const inputW = createMemo(() => termW() - (props.signals.sidebarVisible() ? 42 : 0) - 4)
 
-  // 路径可用宽度 = 输入框宽度 - 统计宽度(精确) - 宿主右侧宽度(动态) - 布局开销；
-  // 低于 HIDE_PATH_BELOW 时整体隐藏路径（宽度归零），把空间让给统计与 commands
+  // 路径可用宽度 = 输入框 - 统计 - 宿主右侧 - 布局开销；低于阈值整体隐藏让位
   const dirDisplay = createMemo(() => {
     const avail = inputW() - statsW() - rightW() - PATH_CHROME
     if (avail < HIDE_PATH_BELOW) return ""
@@ -1682,9 +372,8 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 }
 
 /**
- * 输入框行右侧（session_prompt_right 插槽）：流式期间显示实时 首字/TPS（文案随 LiveStyle 变化）。
- * 宿主在 busy 时会把底部 hint 行整体替换为忙碌指示行（无插槽可注入），而
- * 输入框行右侧不受 status 控制；空闲时回落为宿主该插槽的透传（不遮挡其他插件）。
+ * 输入框行右侧（session_prompt_right）：流式期间显示实时 首字/TPS（文案随 LiveStyle）。
+ * busy 时宿主把 hint 行整体替换为忙碌行，输入框右侧不受影响；空闲回落插槽透传。
  */
 function PromptRightStatus(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
   const sid = props.sessionId
@@ -1758,6 +447,12 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [barStyle, setBarStyle] = createSignal<BarStyle>("default")
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [sectionBottom, setSectionBottom] = createSignal(true)
+  const [barShowHit, setBarShowHit] = createSignal(true)
+  const [barShowTokens, setBarShowTokens] = createSignal(false)
+  const [barShowSpeed, setBarShowSpeed] = createSignal(true)
+  const [barShowBalance, setBarShowBalance] = createSignal(false)
+  // 底栏流式实时段开关：仅 V2 底栏消费（V1 实时行在输入框右侧，不受此项控制）
+  const [barShowLive, setBarShowLive] = createSignal(false)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -1769,8 +464,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   // 侧边栏可见性（由 TokenCachePanel 挂载状态驱动）：可见时宿主输入框宽度 = 终端宽 - 42 - 4
   const [sidebarVisible, setSidebarVisible] = createSignal(false)
 
-  // ── 余额查询状态（共享）：侧边栏与底部栏读同一份数据，
-  //    避免重复请求导致两处余额不一致 ──
+  // ── 余额查询状态（共享）：侧边栏与底部栏同源，避免重复请求 ──
   const [balanceState, setBalanceState] = createSignal<BalanceState>({
     status: "idle", data: null, lastFetch: 0,
   })
@@ -1791,6 +485,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     barStyle, setBarStyle,
     sectionBalance, setSectionBalance,
     sectionBottom, setSectionBottom,
+    barShowHit, setBarShowHit,
+    barShowTokens, setBarShowTokens,
+    barShowSpeed, setBarShowSpeed,
+    barShowBalance, setBarShowBalance,
+    barShowLive, setBarShowLive,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
@@ -1804,9 +503,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   api.slots.register(createSidebarSlot(api, signals))
 
-  // 输入框 hint 行（session_prompt slot，replace 模式）：
-  // 用宿主同一 Prompt 组件重渲染输入框，仅替换 hint 行左侧——
-  // 在路径与右侧 token/commands 提示之间插入 命中率(+趋势) · TPS（精确口径）。
+  // 输入框 hint 行（session_prompt，replace）：重渲染 Prompt 仅替换 hint 行左侧，
+  // 在路径与右侧 token/commands 之间插入 命中率(+趋势) · TPS（精确口径）。
   api.slots.register({
     order: 55,
     slots: {
@@ -1828,8 +526,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             onSubmit={input.on_submit}
             ref={input.ref}
             hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
-            // 透传宿主的 session_prompt_right 插槽（流式实时显示用），避免遮挡
-            // 依赖该插槽的其他插件；无注册时 Slot 为 null。
+            // 透传宿主 session_prompt_right 插槽（无注册时为 null），避免遮挡其他插件
             right={<PromptRightStatus api={api} signals={signals} sessionId={input.session_id} />}
           />
         )
@@ -1850,6 +547,20 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       if (savedLive && LIVE_STYLES.some((s) => s.id === savedLive)) setLiveStyle(savedLive as LiveStyle)
       const savedBar = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? (legacy === "min" ? "min" : "default")
       if (savedBar && BAR_STYLES.some((s) => s.id === savedBar)) setBarStyle(savedBar as BarStyle)
+      // 底栏内容段开关（默认 命中/速度 开、Tokens/余额 关；live 仅 V2 消费）
+      setBarShowHit(readBarItem(api.kv, "hit"))
+      setBarShowTokens(readBarItem(api.kv, "tokens"))
+      setBarShowSpeed(readBarItem(api.kv, "speed"))
+      setBarShowBalance(readBarItem(api.kv, "balance"))
+      setBarShowLive(readBarItem(api.kv, "live"))
+      // 余额 provider / 自动切换（常驻层恢复；侧栏隐藏也要生效）
+      const savedProvider = api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
+      if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
+        setBalanceProviderId(savedProvider)
+        setBalanceUnsupported(false)
+      }
+      const savedAuto = api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
+      if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
     } catch {}
   }
   if (api.kv.ready) {
@@ -1891,10 +602,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     }
   }
 
-  // Re-fetch when the API key is (re)configured via /cache-balance-key.
-  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
-  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
-  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
+  // /cache-balance-key 重新配置后重查。pollBalance 内部读写 balanceState，
+  // 必须 untrack 包裹，否则 effect 追踪 balanceState 造成无限循环。
   createEffect(() => {
     void balanceRefresh()
     untrack(() => { void pollBalance() })
@@ -1903,6 +612,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   // 定时轮询（5 分钟）；随插件生命周期清理
   const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
   api.lifecycle.onDispose(() => clearInterval(balanceTimer))
+
+  // 自动切换余额 provider（实现见 src/balance.ts）：跟随当前会话模型；手动切换即关闭 auto
+  createEffect(() => {
+    syncAutoBalance(api, signals, signals.overrideSessionId() ?? currentSessionIdV1(api))
+  })
 
   /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
   const providerOptionTitle = (p: BalanceProvider, current?: string) => {
@@ -1962,22 +676,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         dialog?.replace(() => (
           <api.ui.DialogSelect
             title="Select Currency"
-            options={Object.entries(CURRENCIES).map(([code, sym]) => ({
-              title: `${code}  (${sym})`,
-              value: code,
-            }))}
+            options={currencyChoices()}
             onSelect={(opt) => {
-              const t = createT(() => langCode())
-              const sym = CURRENCIES[opt.value] ?? "$"
-              const defRate = DEFAULT_RATES[opt.value] ?? 1
-              api.kv.set(`${KV_PREFIX}.currency`, sym)
-              api.kv.set(`${KV_PREFIX}.rate`, defRate)
-              // 同步余额显示币种偏好：CNY/USD 原生直显，其余币种按汇率换算
-              api.kv.set(`${KV_PREFIX}.balance_currency`, opt.value)
-              signals.setBalanceCurrency(opt.value)
-              signals.setCurrencySymbol(sym)
-              signals.setExchangeRate(defRate)
-              api.ui.toast({ message: t("currencySet", { v: opt.value, s: sym, r: defRate }) })
+              api.ui.toast(applyCurrency(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -1997,13 +698,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             placeholder="1.0"
             value={String(api.kv.get<number>(`${KV_PREFIX}.rate`, 1))}
             onConfirm={(val) => {
-              const t = createT(() => langCode())
-              const n = parseFloat(val)
-              if (n > 0) {
-                api.kv.set(`${KV_PREFIX}.rate`, n)
-                signals.setExchangeRate(n)
-                api.ui.toast({ message: t("rateSet", { r: n }) })
-              }
+              const msg = applyRate(api, signals, val)
+              if (msg) api.ui.toast(msg)
               dialog?.clear()
             }}
           />
@@ -2016,11 +712,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Filter performance stats (TTFT/TPS/latency) to the current session model",
       slash: { name: "cache-perf-filter" },
       onSelect: () => {
-        const t = createT(() => langCode())
-        const cur = Boolean(api.kv.get(`${KV_PREFIX}.perf_model_filter`, true))
-        api.kv.set(`${KV_PREFIX}.perf_model_filter`, !cur)
-        signals.setPerfModelFilter(!cur)
-        api.ui.toast({ message: t(!cur ? "perfFilterOn" : "perfFilterOff") })
+        api.ui.toast(applyPerfFilter(api, signals))
       },
     },
     {
@@ -2034,16 +726,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         dialog?.replace(() => (
           <api.ui.DialogSelect
             title={t("liveStyleTitle")}
-            options={LIVE_STYLES.map((s) => ({
-              title: `${visualPadEnd(t(s.labelKey), 10)}${cur === s.id ? "\u2713" : ""}`,
-              value: s.id,
-            }))}
+            options={liveStyleChoices(signals, cur)}
             onSelect={(opt) => {
-              const hit = LIVE_STYLES.find((s) => s.id === opt.value)
-              const style: LiveStyle = hit ? hit.id : "default"
-              api.kv.set(`${KV_PREFIX}.style_live`, style)
-              setLiveStyle(style)
-              api.ui.toast({ message: t("liveStyleSet", { s: t(hit ? hit.labelKey : "styleDefault") }) })
+              api.ui.toast(applyLiveStyle(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -2061,16 +746,28 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         dialog?.replace(() => (
           <api.ui.DialogSelect
             title={t("barStyleTitle")}
-            options={BAR_STYLES.map((s) => ({
-              title: `${visualPadEnd(t(s.labelKey), 10)}${cur === s.id ? "\u2713" : ""}`,
-              value: s.id,
-            }))}
+            options={barStyleChoices(signals, cur)}
             onSelect={(opt) => {
-              const hit = BAR_STYLES.find((s) => s.id === opt.value)
-              const style: BarStyle = hit ? hit.id : "default"
-              api.kv.set(`${KV_PREFIX}.style_bar`, style)
-              setBarStyle(style)
-              api.ui.toast({ message: t("barStyleSet", { s: t(hit ? hit.labelKey : "styleDefault") }) })
+              api.ui.toast(applyBarStyle(api, signals, opt.value))
+              dialog?.clear()
+            }}
+          />
+        ))
+      },
+    },
+    {
+      title: "Cache: Toggle Status Bar Items",
+      value: "cache.bar",
+      description: "Show or hide items in the bottom status bar (hit / tokens / speed / balance)",
+      slash: { name: "cache-bar" },
+      onSelect: (dialog) => {
+        const t = createT(() => langCode())
+        dialog?.replace(() => (
+          <api.ui.DialogSelect
+            title={t("barItemsTitle")}
+            options={barItemChoices(api, signals)}
+            onSelect={(opt) => {
+              api.ui.toast(applyBarItem(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -2084,58 +781,12 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       slash: { name: "cache-section" },
       onSelect: (dialog) => {
         const t = createT(() => langCode())
-        const detailOn = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
-        const modelOn  = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
-        const distOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
-        const skillsOn = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
-        const perfOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.perf`, true))
-        const balanceOn = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
-        const bottomOn = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
-        const borderOn = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
-        const labels: Record<string, string> = {
-          detail:  t("secDetail"),
-          model:   t("secModel"),
-          dist:    t("distTitle"),
-          skills:  t("secSkills"),
-          perf:    t("secPerf"),
-          balance: t("secBalance"),
-          bottom:  t("secBottom"),
-          border:  t("secBorder"),
-        }
-        const optTitle = (label: string, on: boolean) => `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
         dialog?.replace(() => (
           <api.ui.DialogSelect
             title={t("secToggle")}
-            options={[
-              { title: optTitle(labels.detail, detailOn),   value: "detail" },
-              { title: optTitle(labels.model, modelOn),     value: "model" },
-              { title: optTitle(labels.dist, distOn),       value: "dist" },
-              { title: optTitle(labels.skills, skillsOn),   value: "skills" },
-              { title: optTitle(labels.perf, perfOn),       value: "perf" },
-              { title: optTitle(labels.balance, balanceOn), value: "balance" },
-              { title: optTitle(labels.bottom, bottomOn),   value: "bottom" },
-              { title: optTitle(labels.border, borderOn),   value: "border" },
-            ]}
+            options={sectionChoices(api, signals)}
             onSelect={(opt) => {
-              if (opt.value === "border") {
-                const cur = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
-                api.kv.set(`${KV_PREFIX}.border`, !cur)
-                signals.setBorderVisible(!cur)
-                api.ui.toast({ message: !cur ? t("borderShown") : t("borderHidden") })
-              } else {
-                const key = `${KV_PREFIX}.section.${opt.value}`
-                const cur = Boolean(api.kv.get(key, true))
-                api.kv.set(key, !cur)
-                if (opt.value === "detail") signals.setSectionDetail(!cur)
-                if (opt.value === "model")  signals.setSectionModel(!cur)
-                if (opt.value === "dist")   signals.setSectionDist(!cur)
-                if (opt.value === "skills") signals.setSectionSkills(!cur)
-                if (opt.value === "perf")   signals.setSectionPerf(!cur)
-                if (opt.value === "balance") signals.setSectionBalance(!cur)
-                if (opt.value === "bottom")  signals.setSectionBottom(!cur)
-                const name = labels[opt.value] ?? opt.value
-                api.ui.toast({ message: t(!cur ? "sectionShown" : "sectionHidden", { s: name }) })
-              }
+              api.ui.toast(applySection(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -2148,27 +799,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Display the current plugin configuration",
       slash: { name: "cache-config" },
       onSelect: (dialog) => {
-        const t = createT(() => langCode())
-        const sym = api.kv.get<string>(`${KV_PREFIX}.currency`) ?? "$"
-        const rate = api.kv.get<number>(`${KV_PREFIX}.rate`) ?? 1
-        const detail = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
-        const model = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
-        const dist = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
-        const skills = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
-        const perf = Boolean(api.kv.get(`${KV_PREFIX}.section.perf`, true))
-        const balance = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
-        const bottom = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
-        const on = (v: boolean) => v ? "ON" : "OFF"
-        api.ui.toast({
-          title: t("panelConfigTitle"),
-          message: t("panelConfigMsg", {
-            c: sym, r: rate,
-            d: on(detail), m: on(model),
-            t: on(dist), k: on(skills), p: on(perf),
-            b: on(balance), f: on(bottom),
-          }),
-          duration: 8000,
-        })
+        api.ui.toast(configToast(api, signals))
         dialog?.clear()
       },
     },
@@ -2183,15 +814,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         dialog?.replace(() => (
           <api.ui.DialogSelect
             title={t("langTitle")}
-            options={LANG_META.map((m) => ({
-              title: `${visualPadEnd(m.label, 9)}${cur === m.code ? "\u2713" : ""}`,
-              value: m.code,
-            }))}
+            options={langChoices(cur)}
             onSelect={(opt) => {
-              const code = opt.value as LangCode
-              api.kv.set(`${KV_PREFIX}.lang`, code)
-              setLangCode(code)
-              api.ui.toast({ message: t("langSwitched") })
+              api.ui.toast(applyLang(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -2236,11 +861,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 signals.setBalanceProviderId(provider.id)
                 signals.setAutoBalance(false)
                 signals.setBalanceUnsupported(false)
-                // 切换后立即按新 provider 刷新显示（无 key 时显示 idle，避免残留上一 provider 余额）
+                // 切换后立即刷新显示，避免残留上一 provider 余额
                 signals.setBalanceRefresh(signals.balanceRefresh() + 1)
                 const hasKey = !!api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
                 if (!hasKey) {
-                  // 未配置 key → 进入设置流程（对话框保持打开等待输入）
+                  // 未配置 key → 进入设置流程（对话框保持打开）
                   promptBalanceKey(dialog, provider)
                 } else {
                   api.ui.toast({ message: t("providerManual", { p: provider.name }) })
@@ -2274,7 +899,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               api.kv.set(`${KV_PREFIX}.balance.auto`, false)
               signals.setBalanceProviderId(provider.id)
               signals.setAutoBalance(false)
-              // 切换后立即刷新显示（防止取消输入时残留上一 provider 的余额）
+              // 切换后立即刷新，防止取消输入残留旧余额
               signals.setBalanceRefresh(signals.balanceRefresh() + 1)
               // 步骤 2：输入 key
               promptBalanceKey(dialog, provider)

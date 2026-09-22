@@ -458,6 +458,47 @@ function runningToolPart(start: number): Part {
   }
 }
 
+// 回归：上一条以 tool-calls 收尾，当前步文本已带首字时间戳 → 正常 streaming
+// （非工具延续）——覆盖 v2 归一化注入 textStart 后的行为
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0" ? [toolPart(1200, 1400)] : [textPart(1500, "a".repeat(40))]),
+  })
+  const origNow = Date.now
+  Date.now = () => 4000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "streaming")
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 回归：上一条以 tool-calls 收尾，但当前步已有可见文本却缺首字时间戳
+// （v2 修复前的症状）→ 不得误判为工具相位，返回 null 回落最近精确 TPS
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0"
+      ? [toolPart(1200, 1400)]
+      : [{ id: "t", sessionID: "s1", messageID: "m1", type: "text", text: "a".repeat(40) } as unknown as Part]),
+  })
+  const origNow = Date.now
+  Date.now = () => 4000
+  try {
+    assert.equal(computeLivePerf(api, "s1"), null)
+  } finally {
+    Date.now = origNow
+  }
+}
+
 // idle / retry → null（回落宿主 Slot）
 assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "idle" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)
 assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)

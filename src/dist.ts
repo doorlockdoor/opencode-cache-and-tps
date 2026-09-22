@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { PanelApi } from "./panel/panel-api"
 import type { AssistantMessage, Message, UserMessage } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
 import { estimateTokens, num } from "./tokens"
@@ -29,7 +29,7 @@ export interface TokenDist {
 }
 
 /** SDK 未就绪/越界时返回空 parts（逐条 try/catch 的公共形态） */
-function partsOf(api: TuiPluginApi, id: string): readonly Part[] {
+function partsOf(api: PanelApi, id: string): readonly Part[] {
   try { return api.state.part(id) } catch { return [] }
 }
 
@@ -41,7 +41,7 @@ function skillNameFromOutput(output: string): string | undefined {
 }
 
 /** 回合统计：最后一条有 token 数据消息的 context 大小 + 其 parentID 链的 step 数与末次成本。 */
-export function collectRoundUsage(api: TuiPluginApi, msgs: Message[]): {
+export function collectRoundUsage(api: PanelApi, msgs: Message[]): {
   apiInput: number; apiOutput: number; stepCount: number; stepCost: number
 } {
   // 从后往前找最后一条有 token 数据的 assistant 消息（避免取到 streaming 中未填充的消息）
@@ -102,7 +102,9 @@ export function distFingerprint(msg: Message, parts: readonly Part[]): string {
     }
     return fp
   }
-  if (role !== "assistant") return `${role}:${parts.length}`
+  // assistant 与 v2 skill（独立消息类型，parts 由 buildParts 合成 tool part）都按
+  // tool 字段指纹，保证 skill 输出/元数据变化时缓存失效；其余角色只记 parts 数。
+  if (role !== "assistant" && role !== "skill") return `${role}:${parts.length}`
   let fp = `a:${parts.length}`
   for (const p of parts) {
     if (p.type === "tool") {
@@ -133,7 +135,11 @@ function scanMessageDist(msg: Message, parts: readonly Part[]): DistSub {
     }
     return sub
   }
-  if (msg.role !== "assistant") return sub
+  // v2 的技能是独立消息类型（role="skill"），其文本/名称由合成 tool part 承载；
+  // 不能按非 assistant 直接跳过，否则「已加载技能」永远为空。
+  // 注：SDK Message.role 联合类型不含 "skill"，故按 string 放宽比较。
+  const role = msg.role as string
+  if (role !== "assistant" && role !== "skill") return sub
   for (const p of parts) {
     if (p.type === "tool") {
       const tp = p as any
@@ -165,8 +171,9 @@ function scanMessageDist(msg: Message, parts: readonly Part[]): DistSub {
   return sub
 }
 
-/** token 分布扫描：user 消息（system/text/file）与 assistant 消息（tool 输入/结果、task/skill 子代理指令）。 */
-export function collectTokenDist(api: TuiPluginApi, msgs: Message[], session: { agent?: unknown } | undefined): {
+/** token 分布扫描：user 消息（system/text/file）、assistant 消息（tool 输入/结果、task/skill 子代理指令）
+ *  以及 v2 的 skill 独立消息（文本计入 toolResult、名称计入已加载技能）。 */
+export function collectTokenDist(api: PanelApi, msgs: Message[], session: { agent?: unknown } | undefined): {
   dist: TokenDist
   hasDistData: boolean
   skills: { name: string; tokens: number }[]

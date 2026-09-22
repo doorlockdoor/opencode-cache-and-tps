@@ -1,37 +1,14 @@
 ## 介绍
 
 Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS）等信息，支持实时刷新。
-> 同步上游版本@1.6.5
+> ✅已更新兼容opencode v2。
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
 
-**右侧信息样式**（使用`/cache-live-style`设置）：
-
-默认:
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_06.png" width="90%"></img>
-
-DSH：
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_08.png" width="90%"></img>
-
-极简：
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_10.png" width="90%"></img>
-
-**底部信息样式**（使用`/cache-bar-style`设置）：
-
-默认：
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_02.png" width="90%"></img>
-
-极简：
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_11.png" width="90%"></img>
-
-**侧边栏信息**：
-
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_09.png" width="90%"></img>
+**设置显示样式**：
+- `/cache-bar`，设置底部栏显示哪些内容，默认只显示“命中率”和“速度”。
+- `/cache-live-style`，设置实时TPS等信息的样式，包括默认、DSH、极简。
+- `/cache-bar-style`，设置精确TPS等信息的样式，包括默认、极简。
 
 **信息包含**：
 - **TTFT**：首字延迟，从用户发出请求（step）到第一个token的体感时间。
@@ -47,36 +24,11 @@ DSH：
 
 ## 本地构建
 
-`npm run build`，然后复制`dist/tui.js`到`~/.config/opencode/plugins`，重命名为`opencode-visual-cache.js`。
+拉取仓库，运行以下指令。它会自动构建并将目标文件复制至`~/.config/opencode/plugins`，同时设置配置文件与依赖。
 
-```powershell
-npm run build; if ($?) { New-Item -ItemType Directory -Force "~\.config\opencode\plugins" | Out-Null; Copy-Item dist\tui.js "~\.config\opencode\plugins\opencode-visual-cache.js" -Force }
+```bash
+node install.mjs
 ```
-
-编辑`~/.config/opencode/tui.json`，添加本地插件。
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    // ...
-    "./plugins/opencode-visual-cache.js"
-  ]
-}
-```
-
-编辑`~/.config/opencode/package.json`，添加依赖。
-
-```jsonc
-{
-  "dependencies": {
-    // ...
-    "@opentui/solid": "0.4.5"
-  }
-}
-```
-
-重启opencode。
 
 ## License
 

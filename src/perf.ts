@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { PanelApi } from "./panel/panel-api"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
 import { ASCII_PER_TOKEN, estimateTokens, num } from "./tokens"
@@ -25,8 +25,10 @@ import { ASCII_PER_TOKEN, estimateTokens, num } from "./tokens"
 //   tool：参数流式期（tool-input-*）仅建 pending 无 time，tool-call 才置
 //   running 并打 start，tool-result 补 end → 参数生成期不可观测，
 //   留在分母（已知残余低估），与分子（参数已全量计入）方向相反相互弱化。
-//   采样逻辑单一实现（computePerfSample），侧边栏累计与 hint 栏 lastTps
-//   共用，杜绝双源漂移。消息与 part 时间戳持久化在数据库，直接读取推导。
+//   采样逻辑单一实现（computePerfSample），侧边栏累计与底栏 lastTps
+//   共用，杜绝双源漂移。V1 时间戳持久化在数据库、直接读取推导；V2 text
+//   首字时刻由内容开始事件捕获注入，历史数据缺失 → 该步不计入样本
+//   （见 v2/panel-api.ts）。
 
 /** 小步噪声守卫：生成窗口低于此值时时间戳噪声占比过大，TPS 不可信 → 记 null。 */
 export const MIN_GEN_MS = 500
@@ -238,7 +240,7 @@ export function modelKeyOf(am: AssistantMessage): string | null {
  * 回退到最后一条 assistant 消息的模型（旧版 SDK/子代理会话缺 model 信息）。
  * 返回 null 表示当前模型不可知——调用方可据此退化为"不过滤"（全局统计）。
  */
-export function currentModelKey(api: TuiPluginApi, sid: string): string | null {
+export function currentModelKey(api: PanelApi, sid: string): string | null {
   try {
     const session = typeof api.state.session.get === "function" ? api.state.session.get(sid) : undefined
     const p = session?.model?.providerID
@@ -263,7 +265,7 @@ export interface PerfFilterOpts {
 }
 
 /** 遍历 assistant 消息逐条采样（computePerfSample 唯一口径），聚合为中位数 PerfStats。 */
-export function aggregatePerf(api: TuiPluginApi, msgs: readonly Message[], opts?: PerfFilterOpts): PerfStats {
+export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: PerfFilterOpts): PerfStats {
   const filterKey = opts?.modelKey || undefined
   const ttfts: number[] = []
   const tpss: number[] = []
@@ -310,7 +312,7 @@ export type LivePerf =
   | { phase: "tool"; toolMs: number }                         // 工具运行/工具回合延续
 
 /** 单条消息内最后一次工具调用的 time.start（任意状态）。 */
-function lastToolStartOf(api: TuiPluginApi, m: AssistantMessage): number | undefined {
+function lastToolStartOf(api: PanelApi, m: AssistantMessage): number | undefined {
   let t: number | undefined
   let parts: readonly Part[] = []
   try { parts = api.state.part(m.id) } catch {}
@@ -323,13 +325,14 @@ function lastToolStartOf(api: TuiPluginApi, m: AssistantMessage): number | undef
 }
 
 /** 流式期间实时估算当前步性能（口径见 LivePerf）；无进行中 step 返回 null。 */
-export function computeLivePerf(api: TuiPluginApi, sid: string): LivePerf | null {
+export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
   try {
     // status 仅作辅助排除（retry 等）：函数不存在时跳过，
     // 由下方消息状态（最后一条 assistant 未完成）承担流式判定
     try {
-      const st = api.state.session.status?.(sid)
-      if (st && st.type !== "busy") return null
+      const st = api.state.session.status?.(sid) as { type?: string } | string | undefined
+      const mode = typeof st === "string" ? st : st?.type
+      if (mode && mode !== "busy" && mode !== "running") return null
     } catch {}
     const msgs = api.state.session.messages(sid) as Message[]
     let li = -1
@@ -391,6 +394,10 @@ export function computeLivePerf(api: TuiPluginApi, sid: string): LivePerf | null
     if (lastToolStart !== undefined && (am.finish === "tool-calls" || am.finish === "unknown")) {
       return { phase: "tool", toolMs: Math.max(0, now - lastToolStart) }
     }
+    // 容器未提供首个内容时间戳（如 v2 归一化缺失、插件中途接入）时，若已有可见
+    // 内容产出，不得按「工具回合延续」误判——否则整段文本流式期会一直显示
+    // 「工具 xx」。此时无法估算首字/速度，返回 null 由调用方回落最近精确 TPS。
+    if (firstStart === undefined && estTok > 0) return null
     // 工具回合延续 ②：本条是工具后的下一步等待（无内容产出、未完成），
     // 且上一条 assistant 消息以工具收尾 → 计时从上一条最后一次工具调用起算。
     // 跨回合边界（中间隔用户消息）不延续。

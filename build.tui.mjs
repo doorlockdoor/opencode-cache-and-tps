@@ -8,7 +8,7 @@ import { solidPlugin } from "esbuild-plugin-solid"
 const versionFile = resolve("src/_version.ts")
 if (!existsSync(versionFile)) {
   const pkg = JSON.parse(readFileSync("package.json", "utf-8"))
-  writeFileSync(versionFile, `// auto-generated\nexport const PLUGIN_VERSION=${JSON.stringify(pkg.version)};\n`)
+  writeFileSync(versionFile, `// auto-generated\r\nexport const PLUGIN_VERSION=${JSON.stringify(pkg.version)};\r\n`)
 }
 
 await esbuild.build({
@@ -17,6 +17,20 @@ await esbuild.build({
   format: "esm",
   platform: "node",
   bundle: true,
-  external: ["@opencode-ai/*", "@opentui/*", "solid-js"],
+  external: ["@opencode-ai/*", "@opencode/plugin/*", "@opentui/*", "solid-js"],
+  plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
+})
+
+// V2（opencode 2.x）入口：{ id, setup } 协议，独立产物。
+// @opentui/* + solid-js 保持 external：必须用 V2 宿主的同一实例（renderer 上下文相通——
+// self-contained 内联会导致 "No renderer found"）。@opencode-ai/*、@opencode/plugin/* 仅
+// type-only（编译擦除），列出 external 以防误引入。
+await esbuild.build({
+  entryPoints: ["src/v2/index.tsx"],
+  outfile: "dist/v2.js",
+  format: "esm",
+  platform: "node",
+  bundle: true,
+  external: ["@opencode-ai/*", "@opencode/plugin/*", "@opentui/*", "solid-js"],
   plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
 })
