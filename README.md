@@ -14,7 +14,7 @@ Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 - **TPS**：token生成速度（去除工具调用时间）。
 - **Latency**：单次请求（step）的模型生成耗时（体感时间，去除工具调用时间）。
 - 忽略opencode自动压缩造成的误差，忽略工具暂停（例如提问）时的计数。
-> 与opencode客户端tps的差异：客户端tps包含ttft，为发出请求到生成完毕的体感时间，加权平均，天然偏小；本插件的tps为供应商token数除以生成时间，取中位数，偏吐字速度。
+> 与opencode客户端tps的差异：客户端tps包含ttft，为发出请求到生成完毕的体感时间，加权平均，天然偏小；本插件的tps为供应商token数除以生成时间，取中位数，偏输出速度。
 
 **实时TPS估算**：
 - 流式传输时token数为估算值，不同模型会有偏差，传输结束后替换为精确值。
@@ -24,11 +24,37 @@ Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 
 ## 本地构建
 
-拉取仓库，运行以下指令。它会自动构建并将目标文件复制至`~/.config/opencode/plugins`，同时设置配置文件与依赖。
+`npm run build`，然后复制目标文件到`~/.config/opencode/plugins`。
 
-```bash
-node install.mjs
+```powershell
+npm run build; $dst = "~\.config\opencode\plugins\opencode-visual-cache"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
 ```
+
+编辑`~/.config/opencode/package.json`，添加依赖。
+
+```jsonc
+{
+    "type": "module",
+    "dependencies": {
+        // ...
+        "@opentui/solid": "^0.5.1"
+    }
+}
+```
+
+V1需要额外编辑`~/.config/opencode/tui.json`，添加本地TUI插件。
+
+```jsonc
+{
+    "$schema": "https://opencode.ai/tui.json",
+    "plugin": [
+        // ...
+        "./plugins/opencode-visual-cache/dist/tui.js"
+    ]
+}
+```
+
+V1需要重启opencode，V2自动重载。
 
 ## License
 

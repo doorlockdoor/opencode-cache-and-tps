@@ -24,11 +24,37 @@ Forked from opencode-visual-cache, adding time to first token (TTFT), generation
 
 ## Local Build
 
-Clone the repository and run the following command. It builds automatically, copies the artifacts to `~/.config/opencode/plugins`, and sets up the config file and dependencies.
+Run `npm run build`, then copy the artifacts to `~/.config/opencode/plugins`.
 
-```bash
-node install.mjs
+```powershell
+npm run build; $dst = "~\.config\opencode\plugins\opencode-visual-cache"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
 ```
+
+Edit `~/.config/opencode/package.json` and add the dependency.
+
+```jsonc
+{
+    "type": "module",
+    "dependencies": {
+        // ...
+        "@opentui/solid": "^0.5.1"
+    }
+}
+```
+
+V1 additionally requires editing `~/.config/opencode/tui.json` to add the local TUI plugin.
+
+```jsonc
+{
+    "$schema": "https://opencode.ai/tui.json",
+    "plugin": [
+        // ...
+        "./plugins/opencode-visual-cache/dist/tui.js"
+    ]
+}
+```
+
+V1 requires restarting opencode; V2 reloads automatically.
 
 ## License
 
