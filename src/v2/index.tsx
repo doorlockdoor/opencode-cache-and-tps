@@ -4,15 +4,15 @@ import { createSignal, createEffect, onMount, onCleanup, untrack } from "solid-j
 import type { Context } from "./types"
 import { createPanelApi } from "./panel-api"
 import { TokenCachePanel } from "../panel/TokenCachePanel"
-import type { BalanceState, PanelApi, PanelSignals, LiveStyle, BarStyle } from "../panel/panel-api"
+import type { BalanceState, PanelApi, PanelSignals, DisplayStyle } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
 import { StatusView } from "./status"
 import { mapTheme } from "./theme"
 import { makeCommands, findOpencodeKeyV2, currentSessionID } from "./commands"
-import { getBalanceProvider, balanceProviders } from "../balance-providers"
+import { restorePanelPrefs } from "../commands-shared"
+import { getBalanceProvider } from "../balance-providers"
 import { syncAutoBalance } from "../balance"
 import { LANG_META, detectLang, type LangCode } from "../i18n"
-import { LIVE_STYLES, BAR_STYLES, readBarItem } from "../live"
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes（对齐 V1）
 
@@ -35,16 +35,18 @@ function createPanelSignals(): Signals {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionPerf, setSectionPerf] = createSignal(true)
   const [perfModelFilter, setPerfModelFilter] = createSignal(true)
-  const [liveStyle, setLiveStyle] = createSignal<LiveStyle>("default")
-  const [barStyle, setBarStyle] = createSignal<BarStyle>("default")
+  const [style, setStyle] = createSignal<DisplayStyle>("default")
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [sectionBottom, setSectionBottom] = createSignal(true)
   const [barShowHit, setBarShowHit] = createSignal(true)
   const [barShowTokens, setBarShowTokens] = createSignal(false)
+  const [barShowTtft, setBarShowTtft] = createSignal(false)
   const [barShowSpeed, setBarShowSpeed] = createSignal(true)
+  const [barShowLat, setBarShowLat] = createSignal(false)
+  const [barShowTool, setBarShowTool] = createSignal(true)
   const [barShowBalance, setBarShowBalance] = createSignal(false)
-  // 底栏流式实时段（默认关，见 v2/status.tsx）
-  const [barShowLive, setBarShowLive] = createSignal(false)
+  // 速度段宿主口径开关（/cache-bar 末项；仅 V2 可算，V1 恒回落最近样本）
+  const [tpsHost, setTpsHost] = createSignal(false)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -64,15 +66,17 @@ function createPanelSignals(): Signals {
     sectionSkills, setSectionSkills,
     sectionPerf, setSectionPerf,
     perfModelFilter, setPerfModelFilter,
-    liveStyle, setLiveStyle,
-    barStyle, setBarStyle,
+    style, setStyle,
     sectionBalance, setSectionBalance,
     sectionBottom, setSectionBottom,
     barShowHit, setBarShowHit,
     barShowTokens, setBarShowTokens,
+    barShowTtft, setBarShowTtft,
     barShowSpeed, setBarShowSpeed,
+    barShowLat, setBarShowLat,
+    barShowTool, setBarShowTool,
     barShowBalance, setBarShowBalance,
-    barShowLive, setBarShowLive,
+    tpsHost, setTpsHost,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
@@ -92,32 +96,10 @@ function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals 
   /** 当前统计目标会话：子代理 override 优先，否则当前路由会话。 */
   const currentSid = () => props.signals.overrideSessionId() ?? currentSessionID(props.context)
 
-  // 语言 / 实时行 / 底栏样式 / 底栏开关 / 性能过滤 偏好恢复（KV 就绪后）
+  // 语言 / 显示样式 / 内容段开关 / 性能过滤 / 余额偏好 恢复（KV 就绪后）
   const restorePrefs = () => {
     try {
-      const saved = props.api.kv.get<string>(`${KV_PREFIX}.lang`)
-      if (saved && LANG_META.some((m) => m.code === saved)) props.signals.setLangCode(saved as LangCode)
-      const legacy = props.api.kv.get<string>(`${KV_PREFIX}.tps_style`)
-      const savedLive = props.api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? legacy
-      if (savedLive && LIVE_STYLES.some((s) => s.id === savedLive)) props.signals.setLiveStyle(savedLive as LiveStyle)
-      const savedBar = props.api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? (legacy === "min" ? "min" : "default")
-      if (savedBar && BAR_STYLES.some((s) => s.id === savedBar)) props.signals.setBarStyle(savedBar as BarStyle)
-      const filter = props.api.kv.get<boolean>(`${KV_PREFIX}.perf_model_filter`, true)
-      props.signals.setPerfModelFilter(filter !== false)
-      // 底栏内容段开关（默认 命中/速度 开、Tokens/余额/实时 关）
-      props.signals.setBarShowHit(readBarItem(props.api.kv, "hit"))
-      props.signals.setBarShowTokens(readBarItem(props.api.kv, "tokens"))
-      props.signals.setBarShowSpeed(readBarItem(props.api.kv, "speed"))
-      props.signals.setBarShowBalance(readBarItem(props.api.kv, "balance"))
-      props.signals.setBarShowLive(readBarItem(props.api.kv, "live"))
-      // 余额 provider / 自动切换（常驻层恢复；侧栏隐藏也要生效）
-      const provider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
-      if (typeof provider === "string" && balanceProviders.some((p) => p.id === provider)) {
-        props.signals.setBalanceProviderId(provider)
-        props.signals.setBalanceUnsupported(false)
-      }
-      const auto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
-      if (typeof auto === "boolean") props.signals.setAutoBalance(auto)
+      restorePanelPrefs(props.api, props.signals)
     } catch {}
   }
   onMount(restorePrefs)
@@ -206,7 +188,7 @@ export default {
       ),
     })
 
-    // 底部状态栏 + 实时行（合并到 prompt.footer.status）。
+    // 底部状态栏（含流式实时块，合并到 prompt.footer.status）。
     context.ui.slot({
       append: "prompt.footer.status",
       render: (props: any) => (

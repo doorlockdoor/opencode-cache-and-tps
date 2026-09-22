@@ -4,19 +4,20 @@ import { createMemo, onMount, Show, For } from "solid-js"
 import type { Context } from "./types"
 import type { PanelApi, PanelSignals } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
-import { num } from "../tokens"
 import { FALLBACK, MAX_SAT, desaturateTo } from "../ui"
 import { fmtCompact, formatBalanceText } from "../currency"
 import { createT } from "../i18n"
 import { mapTheme } from "./theme"
-import { computeLivePerf, computePerfSample, modelKeyOf, currentModelKey } from "../perf"
+import { computeLivePerf, lastPerfSample, hostTurnTps, currentModelKey } from "../perf"
 import { collectUsageBySession } from "../stats"
-import { createBusyTick, liveStatSegs, type StatSeg } from "../live"
+import { createBusyTick, liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, type StatSeg } from "../live"
 
 /**
- * v2 底部状态栏（prompt.footer.status，append）：命中率(+趋势) · Tokens · 速度/实时段 · 余额。
- * 实时段默认关闭（/cache-bar「实时」开启）：默认只显示精确 命中率/速度，每 step 完成时刷新；
- * 开启后流式期间改显实时估算。颜色与侧边栏同源（mapTheme → desaturateTo）。
+ * v2 底部状态栏（prompt.footer.status，append）：命中率(+趋势) · Tokens · 首字 · 速度 · 延迟 · 余额。
+ * 内容段由 /cache-bar 逐段开关（默认 命中/速度/工具 开）；流式期间实时块接管
+ * 速度/首字/延迟 槽位显示实时值——同一段信息同一时刻只出现一次，回合内间隙冻结为
+ * 最近实时值、回合结束回落精确值，与 V1（右侧实时行 + 底栏精确段）口径一致。
+ * 颜色与侧边栏同源（mapTheme → desaturateTo）。
  * 仅会话内渲染：宿主在首页 Prompt 下方也挂此插槽（sessionID 为空），此时隐藏。
  */
 export function StatusView(props: {
@@ -68,29 +69,24 @@ export function StatusView(props: {
     return Math.abs(d) < 0.05 ? null : d
   })
 
-  // ── 最近一次精确 TPS（与侧边栏性能同源：computePerfSample） ──
-  const lastTps = createMemo(() => {
+  // ── 最近精确样本（首字/速度/延迟三段同源：lastPerfSample，模型过滤同侧边栏）──
+  const lastSample = createMemo(() => {
     const id = sid()
     if (!id) return null
     const mk = props.signals.perfModelFilter() ? currentModelKey(props.api, id) : null
-    const msgs = props.api.state.session.messages(id)
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]
-      if (m.role !== "assistant") continue
-      if (mk && modelKeyOf(m) !== mk) continue
-      const s = computePerfSample(m, props.api.state.part(m.id))
-      if (s && s.tps !== null) return s.tps
-    }
-    return null
+    return lastPerfSample(props.api, id, mk)
   })
 
-  // ── 流式实时段（默认关闭，/cache-bar「实时」开启；关闭时心跳不启动，走下方精确分支）──
-  const liveEnabled = createMemo(() => props.signals.barShowSpeed() && props.signals.barShowLive())
-  const liveTick = createBusyTick(props.api, sid, liveEnabled)
-  const live = createMemo(() => {
-    if (!liveEnabled()) return null
+  // ── 流式实时块（段开关：首字/速度/延迟/工具，默认 速度/工具 开）：busy 时接管
+  // 速度/首字/延迟 精确槽位；全关或非流式时空块，走精确分支。全关时心跳不启动。──
+  const anyLiveOn = createMemo(() => anyLiveSegment(props.signals))
+  const liveTick = createBusyTick(props.api, sid, anyLiveOn)
+  const liveSegs = createMemo<StatSeg[]>(() => {
+    if (!anyLiveOn()) return []
     liveTick()
-    return computeLivePerf(props.api, sid())
+    const lv = computeLivePerf(props.api, sid())
+    if (!lv) return []
+    return liveStatSegs(lv, t, pal().muted, pal().text, props.signals.style(), liveEnabled(props.signals))
   })
 
   const balanceText = createMemo(() => {
@@ -103,7 +99,7 @@ export function StatusView(props: {
 
   const segs = createMemo<StatSeg[]>(() => {
     const s = stats()
-    const plain = props.signals.barStyle() === "min"
+    const plain = props.signals.style() === "min"
     const out: StatSeg[] = []
     // 段间分隔符：仅当已有内容时插入，避免关闭首段后出现前导「·」
     const sep = () => { if (out.length) out.push({ text: " \u00b7 ", color: pal().muted }) }
@@ -124,20 +120,23 @@ export function StatusView(props: {
         out.push({ text: fmtCompact(total), color: pal().text })
       }
     }
-    if (props.signals.barShowSpeed()) {
-      // 无实时估算（默认关闭或非流式）→ 最近一次精确 TPS；开启且流式中 → 实时估算替代
-      const lv = live()
-      if (lv) {
-        sep()
-        out.push(...liveStatSegs(lv, t, pal().muted, pal().text, props.signals.liveStyle()))
-      } else {
-        const tps = lastTps()
-        if (tps !== null) {
-          sep()
-          if (!plain) out.push({ text: t("barTPS") + " ", color: pal().muted })
-          out.push({ text: tps.toFixed(1) + " " + t("tokS"), color: pal().text })
-        }
-      }
+    // 性能段槽位（固定顺序 首字 → 速度 → 延迟，与实时块、侧边栏性能区一致）：
+    // 流式实时块非空时由其接管（实时值，位置不变）——computeLivePerf 回合内冻结，
+    // busy 期间几乎总非空；否则显示 /cache-bar 控制的精确值（最近样本；同一条 step 三个指标同源）
+    const lvBlock = liveSegs()
+    if (lvBlock.length > 0) {
+      sep()
+      out.push(...lvBlock)
+    } else {
+      const sample = lastSample()
+      // 精确口径：宿主开关开启 → 回合聚合（含首字等待，对齐宿主 footer；缺 streamed 自动回落最近样本）
+      const tps = props.signals.tpsHost()
+        ? (hostTurnTps(props.api, sid()) ?? sample?.tps ?? null)
+        : (sample?.tps ?? null)
+      pushPerfSegs(out, sep, {
+        style: props.signals.style(), t, sample, tps, muted: pal().muted, text: pal().text,
+        ttft: props.signals.barShowTtft(), speed: props.signals.barShowSpeed(), lat: props.signals.barShowLat(),
+      })
     }
     if (props.signals.barShowBalance() && !props.signals.balanceUnsupported()) {
       sep()

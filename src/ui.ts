@@ -183,7 +183,7 @@ function fmtMs(ms: number): string {
   return (ms / 1000).toFixed(1) + "s"
 }
 
-/** 秒格式化（实时行三样式统一口径）：830 → "0.83s"，始终两位小数。 */
+/** 秒格式化（性能段实时值与精确值共用，三样式统一口径）：830 → "0.83s"，始终两位小数。 */
 function fmtSec(ms: number): string {
   return (ms / 1000).toFixed(2) + "s"
 }

@@ -8,9 +8,9 @@ import { KV_PREFIX } from "../panel/panel-api"
 import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "../balance-providers"
 import { createT } from "../i18n"
 import {
-  applyBarItem, applyBarStyle, applyCurrency, applyLang, applyLiveStyle,
-  applyPerfFilter, applyRate, applySection, barItemChoices, barStyleChoices,
-  configToast, currencyChoices, langChoices, liveStyleChoices, sectionChoices,
+  applyBarItem, applyStyle, applyCurrency, applyLang,
+  applyPerfFilter, applyRate, applySection, barItemChoices,
+  configToast, currencyChoices, langChoices, sectionChoices, styleChoices,
   type ToastMsg,
 } from "../commands-shared"
 
@@ -138,47 +138,31 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       slash: { name: "cache-perf-filter" },
       run: () => show(applyPerfFilter(api, signals)),
     },
-    // ── /cache-live-style ──
+    // ── /cache-style ──
     {
-      id: "opencode-visual-cache.cache.livestyle",
-      title: "Cache: Set Live Line Style",
-      description: "Choose the real-time display style for the prompt line",
+      id: "opencode-visual-cache.cache.style",
+      title: "Cache: Set Display Style",
+      description: "Set the display style for all info segments (default / dsh / minimal)",
       group: "Cache",
       palette: true,
-      slash: { name: "cache-live-style" },
+      slash: { name: "cache-style" },
       run: async () => {
-        const cur = api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? "default"
-        const opt = await context.ui.dialog.select({ title: t()("liveStyleTitle"), options: liveStyleChoices(signals, cur) })
+        const cur = api.kv.get<string>(`${KV_PREFIX}.style`) ?? "default"
+        const opt = await context.ui.dialog.select({ title: t()("styleTitle"), options: styleChoices(signals, cur) })
         if (!opt) return
-        show(applyLiveStyle(api, signals, opt))
-      },
-    },
-    // ── /cache-bar-style ──
-    {
-      id: "opencode-visual-cache.cache.barstyle",
-      title: "Cache: Set Status Bar Style",
-      description: "Choose the display style for the bottom status bar",
-      group: "Cache",
-      palette: true,
-      slash: { name: "cache-bar-style" },
-      run: async () => {
-        const cur = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? "default"
-        const opt = await context.ui.dialog.select({ title: t()("barStyleTitle"), options: barStyleChoices(signals, cur) })
-        if (!opt) return
-        show(applyBarStyle(api, signals, opt))
+        show(applyStyle(api, signals, opt))
       },
     },
     // ── /cache-bar ──
     {
       id: "opencode-visual-cache.cache.bar",
       title: "Cache: Toggle Status Bar Items",
-      description: "Show or hide items in the bottom status bar (hit / tokens / speed / balance / live)",
+      description: "Show or hide info segments (hit / tokens / balance / ttft / speed / latency / tool; live while streaming, exact when idle)",
       group: "Cache",
       palette: true,
       slash: { name: "cache-bar" },
       run: async () => {
-        // includeLive：实时项仅 V2 露出（V1 实时行在输入框右侧）
-        const opt = await context.ui.dialog.select({ title: t()("barItemsTitle"), options: barItemChoices(api, signals, { includeLive: true }) })
+        const opt = await context.ui.dialog.select({ title: t()("barItemsTitle"), options: barItemChoices(api, signals, { host: true }) })
         if (!opt) return
         show(applyBarItem(api, signals, opt))
       },

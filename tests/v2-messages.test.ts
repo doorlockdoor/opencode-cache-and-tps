@@ -81,7 +81,7 @@ assert.equal(contentText(undefined), "")
   assert.equal(messages[1].parentID, "a2")
 }
 
-// ── 实时首字注入：text part 使用事件捕获的 textStart（v2 实时行必需）─────────
+// ── 实时首字注入：text part 使用事件捕获的 textStart（v2 实时块必需）─────────
 {
   const rec = {
     id: "a1", type: "assistant", time: { created: 100, streamed: 900 },
@@ -138,8 +138,8 @@ assert.equal(contentText(undefined), "")
   assert.ok(out.dist.toolResult > 0)
 }
 
-// ── createPanelApi：就地增长的内容必须使归一化缓存失效（实时行回归）─────────
-// 上游 Solid `produce` 就地改内容、外层数组引用不变；若缓存只比对引用，实时行读到的
+// ── createPanelApi：就地增长的内容必须使归一化缓存失效（实时块回归）─────────
+// 上游 Solid `produce` 就地改内容、外层数组引用不变；若缓存只比对引用，实时块读到的
 // 文本会停在首次归一化的空串 → estTok=0 → 速度记 null，思考期只显示「首字」。
 {
   const raw: any[] = [{ id: "a1", type: "assistant", time: { created: 1000 }, content: [] }]

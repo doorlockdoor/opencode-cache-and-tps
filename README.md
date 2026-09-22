@@ -5,16 +5,16 @@ Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
 
-**设置显示样式**：
-- `/cache-bar`，设置底部栏显示哪些内容，默认只显示“命中率”和“速度”。
-- `/cache-live-style`，设置实时TPS等信息的样式，包括默认、DSH、极简。
-- `/cache-bar-style`，设置精确TPS等信息的样式，包括默认、极简。
+**显示样式**：
+- `/cache-style`，设置底部信息样式，包括默认、DSH、极简。
+- `/cache-bar`，设置底部信息开关，默认显示命中率+速度+工具（仅在调用工具时显示），全部选项包括：命中率/Tokens/余额/首字/速度/延迟/工具。
 
 **信息包含**：
 - **TTFT**：首字延迟，从用户发出请求（step）到第一个token的体感时间。
 - **TPS**：token生成速度（去除工具调用时间）。
 - **Latency**：单次请求（step）的模型生成耗时（体感时间，去除工具调用时间）。
 - 忽略opencode自动压缩造成的误差，忽略工具暂停（例如提问）时的计数。
+> 与opencode客户端tps的差异：客户端tps包含ttft，为发出请求到生成完毕的体感时间，加权平均，天然偏小；本插件的tps为供应商token数除以生成时间，取中位数，偏吐字速度。
 
 **实时TPS估算**：
 - 流式传输时token数为估算值，不同模型会有偏差，传输结束后替换为精确值。

@@ -9,10 +9,12 @@ import type { BalanceEntry } from "../balance-providers"
 /** KV 存储键前缀（单一来源，避免各组件间键名漂移）。 */
 export const KV_PREFIX = "cache_panel"
 
-/** 输入框实时行样式（默认 / DeepSeek harness / 极简）。 */
-export type LiveStyle = "default" | "dsh" | "min"
-/** 底部提示栏样式（默认 / 极简）。 */
-export type BarStyle = "default" | "min"
+/**
+ * 显示样式（唯一注册表，/cache-style 设置，作用于全部信息段的两态外观）：
+ * default 带标签；dsh 用 DeepSeek 文案变体（首字→「首 Token」，速度/延迟省去标签，
+ * 实时与精确同口径）；min 全部去标签。
+ */
+export type DisplayStyle = "default" | "dsh" | "min"
 
 /** 会话信息（面板消费的字段；宿主类型过严，用宽松接口）。 */
 export interface PanelSession {
@@ -82,29 +84,37 @@ export interface PanelSignals {
   /** 性能统计是否按当前模型过滤（切模型后中位数/最近值不混入其他模型）。 */
   perfModelFilter: () => boolean
   setPerfModelFilter: (v: boolean) => void
-  /** 输入框右侧实时行样式。 */
-  liveStyle: () => LiveStyle
-  setLiveStyle: (v: LiveStyle) => void
-  /** 下方提示栏样式。 */
-  barStyle: () => BarStyle
-  setBarStyle: (v: BarStyle) => void
+  /** 显示样式（/cache-style；default 带标签 / dsh DeepSeek 文案变体 / min 全部去标签）。 */
+  style: () => DisplayStyle
+  setStyle: (v: DisplayStyle) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
   /** Bottom status bar (prompt hint line) visibility. */
   sectionBottom: () => boolean
   setSectionBottom: (v: boolean) => void
-  /** 底部状态栏各内容段显隐（/cache-bar 命令开关；默认 命中/速度 开、Tokens/余额 关）。 */
+  /**
+   * 内容段显隐（/cache-bar 开关；默认 命中/速度/工具 开，Tokens/余额/首字/延迟 关）。
+   * 每段一个开关管两态：ttft/speed/lat 流式时显实时值（V1 右侧 / V2 底栏内联）、
+   * 回合内间隙冻结为最近实时值，回合结束才显精确值；tool 仅工具相位显示计时；
+   * hit/tokens/balance 恒为精确值。
+   */
   barShowHit: () => boolean
   setBarShowHit: (v: boolean) => void
   barShowTokens: () => boolean
   setBarShowTokens: (v: boolean) => void
+  barShowTtft: () => boolean
+  setBarShowTtft: (v: boolean) => void
   barShowSpeed: () => boolean
   setBarShowSpeed: (v: boolean) => void
+  barShowLat: () => boolean
+  setBarShowLat: (v: boolean) => void
+  barShowTool: () => boolean
+  setBarShowTool: (v: boolean) => void
   barShowBalance: () => boolean
   setBarShowBalance: (v: boolean) => void
-  /** 底栏流式实时段显隐（默认关；仅 V2 底栏消费，关闭时只显示每 step 刷新的精确值）。 */
-  barShowLive: () => boolean
-  setBarShowLive: (v: boolean) => void
+  /** 速度段精确值是否用宿主口径（回合聚合、分母含首字等待；仅 V2 可算，缺数据自动回落最近样本）。 */
+  tpsHost: () => boolean
+  setTpsHost: (v: boolean) => void
   /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void

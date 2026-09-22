@@ -4,8 +4,8 @@ import { createSignal, createEffect, onCleanup } from "solid-js"
 import type { AssistantMessage } from "@opencode-ai/sdk"
 import { createT, type Translation } from "./i18n"
 import { fmtSec } from "./ui"
-import type { LivePerf } from "./perf"
-import { KV_PREFIX, type PanelApi, type LiveStyle, type BarStyle } from "./panel/panel-api"
+import type { LivePerf, PerfSample } from "./perf"
+import { KV_PREFIX, type PanelApi, type PanelSignals, type DisplayStyle } from "./panel/panel-api"
 
 // dist/perf 纯统计在 ./dist.ts 与 ./perf.ts：不建响应式依赖，调用方须 untrack。
 
@@ -39,66 +39,157 @@ export function createBusyTick(api: PanelApi, sid: () => string, enabled?: () =>
 }
 
 export type StatSeg = { text: string; color: string | undefined }
-type Translate = ReturnType<typeof createT>
-/** 实时行/底栏样式注册表：新增样式在此追加（菜单与 KV 校验自动跟随），渲染分支与 i18n 文案手动补。 */
-export const LIVE_STYLES = [
+export type Translate = ReturnType<typeof createT>
+/** 显示样式注册表（/cache-style；菜单与 KV 校验自动跟随，渲染分支与 i18n 文案手动补）。 */
+export const STYLES = [
   { id: "default", labelKey: "styleDefault" },
   { id: "dsh",     labelKey: "styleDsh" },
   { id: "min",     labelKey: "styleMin" },
-] as const satisfies readonly { id: LiveStyle; labelKey: keyof Translation }[]
+] as const satisfies readonly { id: DisplayStyle; labelKey: keyof Translation }[]
 
-export const BAR_STYLES = [
-  { id: "default", labelKey: "styleDefault" },
-  { id: "min",     labelKey: "styleMin" },
-] as const satisfies readonly { id: BarStyle; labelKey: keyof Translation }[]
-
-/** 底栏内容段开关注册表（/cache-bar、偏好恢复与两壳渲染共用）；default 即 KV 缺失默认值。 */
-export type BarItemId = "hit" | "tokens" | "speed" | "balance" | "live"
+/**
+ * 内容段开关注册表（/cache-bar、偏好恢复与两壳渲染共用）；default 即 KV 缺失默认值。
+ * 每段一个开关管两态：命中率/Tokens/余额为常显精确值；首字/速度/延迟流式时显实时值
+ * （V1 输入框右侧 / V2 底栏内联）、回合内间隙冻结为最近实时值、回合结束显精确值；
+ * 工具仅在工具相位显示计时。
+ */
+export type BarItemId = "hit" | "tokens" | "balance" | "ttft" | "speed" | "lat" | "tool"
 export const BAR_ITEMS = [
   { id: "hit",     labelKey: "barHit",  default: true  },
   { id: "tokens",  labelKey: "barTok",  default: false },
-  { id: "speed",   labelKey: "barTPS",  default: true  },
   { id: "balance", labelKey: "barBal",  default: false },
-  // 实时段（仅 V2 底栏消费，菜单只在此壳露出）：默认关——关闭时底栏只显示每 step 刷新的精确值
-  { id: "live",    labelKey: "barLive", default: false },
+  { id: "ttft",    labelKey: "barTTFT", default: false },
+  { id: "speed",   labelKey: "barTPS",  default: true  },
+  { id: "lat",     labelKey: "barLat",  default: false },
+  { id: "tool",    labelKey: "barTool", default: true  },
 ] as const satisfies readonly { id: BarItemId; labelKey: keyof Translation; default: boolean }[]
 
-/** 读取某个底栏内容段的开关状态（KV 缺失时回落到注册表默认值）。 */
+/** 读取某个内容段的开关状态（KV 缺失时回落到注册表默认值）。 */
 export function readBarItem(kv: PanelApi["kv"], id: BarItemId): boolean {
   const item = BAR_ITEMS.find((i) => i.id === id)
   return Boolean(kv.get<boolean>(`${KV_PREFIX}.bar.${id}`, item?.default ?? true))
 }
 
-// 流式实时估算的着色分段（V1 输入框右侧与 V2 底栏实时段共用）：
-// prefill → 首字等待；streaming → 首字 · 速度（未达守卫省略）；tool → 工具计时。
-// dsh 用 DeepSeek harness 文案；min 去掉全部标签。
-export function liveStatSegs(lv: LivePerf, t: Translate, muted: string | undefined, text: string | undefined, style: LiveStyle = "default"): StatSeg[] {
-  if (lv.phase === "tool") {
-    const segs: StatSeg[] = []
-    if (style !== "min") segs.push({ text: t("barTool") + " ", color: muted })
-    segs.push({ text: fmtSec(lv.toolMs) + "\u2026", color: text })
-    return segs
-  }
+/**
+ * 读取显示样式及旧键迁移：新键 style 优先，其次 style_live、style_bar=min、tps_style；
+ * 非法/缺失值回落 default（STYLES 为唯一校验源）。
+ */
+export function readDisplayStyle(kv: PanelApi["kv"]): DisplayStyle {
+  const legacyBarStyle = kv.get<string>(`${KV_PREFIX}.style_bar`)
+  const saved = kv.get<string>(`${KV_PREFIX}.style`)
+    ?? kv.get<string>(`${KV_PREFIX}.style_live`)
+    ?? (legacyBarStyle === "min" ? "min" : undefined)
+    ?? kv.get<string>(`${KV_PREFIX}.tps_style`)
+  return saved && STYLES.some((s) => s.id === saved) ? (saved as DisplayStyle) : "default"
+}
+
+/**
+ * 性能段（首字/速度/延迟）精确值标签，与实时块 dsh/min 口径完全一致：
+ * min 全省；dsh 首字用 DeepSeek 文案「首 Token」、速度/延迟省去标签；default 全带。
+ * 返回 null 表示不渲染标签（命中率/Tokens/余额非性能段，仍只受 min 影响）。
+ */
+export function perfLabel(style: DisplayStyle, t: Translate, key: "ttft" | "tps" | "lat"): string | null {
+  if (style === "min") return null
+  if (style === "dsh") return key === "ttft" ? t("barFirstToken") : null
+  return t(key === "ttft" ? "barTTFT" : key === "tps" ? "barTPS" : "barLat")
+}
+
+// 流式实时分段（V1 输入框右侧与 V2 底栏实时块共用）：
+// prefill → 首字等待；streaming/tool → 首字 · 速度 · 延迟（值缺失的段省略）；
+// tool 相位且「工具」项开启 → 仅工具计时（旧行为），否则显示冻结的实时值。
+// dsh 用 DeepSeek harness 文案（仅实时值；精确值渲染不经过此函数）；min 去掉全部标签。enabled 由调用方按各段开关传入。
+export interface LiveEnabled { ttft: boolean; tps: boolean; lat: boolean; tool: boolean }
+/** 由信号派生实时段开关（首字/速度/延迟/工具），避免两壳各自拼装。 */
+export function liveEnabled(
+  signals: Pick<PanelSignals, "barShowTtft" | "barShowSpeed" | "barShowLat" | "barShowTool">,
+): LiveEnabled {
+  return { ttft: signals.barShowTtft(), tps: signals.barShowSpeed(), lat: signals.barShowLat(), tool: signals.barShowTool() }
+}
+/** 任一实时段开启（决定是否启动 250ms 心跳与实时估算；全关走精确分支）。 */
+export function anyLiveSegment(
+  signals: Pick<PanelSignals, "barShowTtft" | "barShowSpeed" | "barShowLat" | "barShowTool">,
+): boolean {
+  const e = liveEnabled(signals)
+  return e.ttft || e.tps || e.lat || e.tool
+}
+
+export function liveStatSegs(
+  lv: LivePerf,
+  t: Translate,
+  muted: string | undefined,
+  text: string | undefined,
+  style: DisplayStyle = "default",
+  enabled: LiveEnabled,
+): StatSeg[] {
+  const segs: StatSeg[] = []
   const dsh = style === "dsh"
   const min = style === "min"
   const label = dsh ? t("barFirstToken") : t("barTTFT")
-  if (lv.phase === "prefill") {
-    return min
-      ? [{ text: fmtSec(lv.waitMs) + "\u2026", color: text }]
-      : [
-          { text: label + " ", color: muted },
-          { text: fmtSec(lv.waitMs) + "\u2026", color: text },
-        ]
+  if (lv.phase === "tool" && enabled.tool) {
+    if (!min) segs.push({ text: t("barTool") + " ", color: muted })
+    segs.push({ text: fmtSec(lv.toolMs ?? 0) + "\u2026", color: text })
+    return segs
   }
-  const segs: StatSeg[] = min
-    ? [{ text: fmtSec(lv.ttft), color: text }]
-    : [
-        { text: label + " ", color: muted },
-        { text: fmtSec(lv.ttft), color: text },
-      ]
-  if (lv.tps !== null) {
-    segs.push({ text: dsh || min ? " \u00b7 " : " \u00b7 " + t("barTPS") + " ", color: muted })
+  // 首字：prefill 显示等待进行中，其余显示本步首字（无产出时为回合内冻结值）
+  if (enabled.ttft) {
+    const ms = lv.phase === "prefill" ? lv.waitMs : lv.ttft
+    if (ms !== null) {
+      if (!min) segs.push({ text: label + " ", color: muted })
+      segs.push({ text: fmtSec(ms) + (lv.phase === "prefill" ? "\u2026" : ""), color: text })
+    }
+  }
+  // 速度/延迟：分隔符仅在已有前置段时插入（首字关闭时不残留前导「·」）；
+  // dsh 只保留「首 Token」标签（DeepSeek harness 风格），速度/延迟标签同 min 一并省去
+  if (enabled.tps && lv.tps !== null) {
+    if (segs.length) segs.push({ text: " \u00b7 ", color: muted })
+    if (!dsh && !min) segs.push({ text: t("barTPS") + " ", color: muted })
     segs.push({ text: lv.tps.toFixed(1) + " " + t("tokS"), color: text })
   }
+  if (enabled.lat && lv.elapsed !== null) {
+    if (segs.length) segs.push({ text: " \u00b7 ", color: muted })
+    if (!dsh && !min) segs.push({ text: t("barLat") + " ", color: muted })
+    segs.push({ text: fmtSec(lv.elapsed) + "\u2026", color: text })
+  }
   return segs
+}
+
+/**
+ * 精确性能段（首字/速度/延迟）按固定顺序追加到 out：受各段开关控制、标签经 perfLabel
+ * 与实时块同口径。段间分隔由调用方 sep 负责（仅 out 非空时插入）。tps 由调用方给出
+ * （V2 宿主口径或最近样本），sample 为最近精确样本（速度取 null 时该段隐藏，首字/延迟照常）。
+ */
+export function pushPerfSegs(
+  out: StatSeg[],
+  sep: () => void,
+  opts: {
+    style: DisplayStyle
+    t: Translate
+    sample: PerfSample | null
+    tps: number | null
+    ttft: boolean
+    speed: boolean
+    lat: boolean
+    muted: string | undefined
+    text: string | undefined
+  },
+): void {
+  const { style, t, sample, tps, muted, text } = opts
+  if (opts.ttft && sample) {
+    sep()
+    const label = perfLabel(style, t, "ttft")
+    if (label !== null) out.push({ text: label + " ", color: muted })
+    out.push({ text: fmtSec(sample.ttft), color: text })
+  }
+  if (opts.speed && tps !== null) {
+    sep()
+    const label = perfLabel(style, t, "tps")
+    if (label !== null) out.push({ text: label + " ", color: muted })
+    out.push({ text: tps.toFixed(1) + " " + t("tokS"), color: text })
+  }
+  if (opts.lat && sample) {
+    sep()
+    const label = perfLabel(style, t, "lat")
+    if (label !== null) out.push({ text: label + " ", color: muted })
+    out.push({ text: fmtSec(sample.latency), color: text })
+  }
 }

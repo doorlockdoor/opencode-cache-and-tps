@@ -18,17 +18,17 @@ import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } f
 import { syncAutoBalance } from "./balance"
 import { collectUsageBySession } from "./stats"
 import {
-  applyBarItem, applyBarStyle, applyCurrency, applyLang, applyLiveStyle,
-  applyPerfFilter, applyRate, applySection, barItemChoices, barStyleChoices,
-  configToast, currencyChoices, langChoices, liveStyleChoices, sectionChoices,
+  applyBarItem, applyStyle, applyCurrency, applyLang,
+  applyPerfFilter, applyRate, applySection, barItemChoices,
+  configToast, currencyChoices, langChoices, sectionChoices, styleChoices, restorePanelPrefs,
 } from "./commands-shared"
 import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 import { num } from "./tokens"
-import { computePerfSample, computeLivePerf, modelKeyOf, currentModelKey } from "./perf"
+import { computeLivePerf, lastPerfSample, currentModelKey } from "./perf"
 import { FALLBACK, MAX_SAT, desaturateTo, fmtCost, visualWidth, truncateVisual } from "./ui"
 import { fmtCompact, formatBalanceText } from "./currency"
-import { LIVE_STYLES, BAR_STYLES, readBarItem, liveStatSegs, createBusyTick, type StatSeg } from "./live"
-import { KV_PREFIX, type BalanceState, type PanelSignals, type LiveStyle, type BarStyle } from "./panel/panel-api"
+import { liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, createBusyTick, type StatSeg } from "./live"
+import { KV_PREFIX, type BalanceState, type PanelSignals, type DisplayStyle } from "./panel/panel-api"
 import { TokenCachePanel } from "./panel/TokenCachePanel"
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
@@ -145,23 +145,12 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return collectUsageBySession(props.api, id)
   })
 
-  // ── 最近精确 TPS（computePerfSample 唯一采样；过滤开启时跳过非当前模型）──
-  const lastTps = createMemo(() => {
+  // ── 最近精确样本（首字/速度/延迟三段同源；computePerfSample 唯一采样，过滤开启时跳过非当前模型）──
+  const lastSample = createMemo(() => {
     const id = sid
     if (!id) return null
     const mk = props.signals.perfModelFilter() ? currentModelKey(props.api, id) : null
-    const msgs = props.api.state.session.messages(id) as Message[]
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]
-      if (m.role !== "assistant") continue
-      const am = m as AssistantMessage
-      if (mk && modelKeyOf(am) !== mk) continue
-      let parts: readonly Part[] = []
-      try { parts = props.api.state.part(am.id) } catch {}
-      const s = computePerfSample(am, parts)
-      if (s && s.tps !== null) return s.tps
-    }
-    return null
+    return lastPerfSample(props.api, id, mk)
   })
 
   // ── 会话累计 tokens（tokens 段开启时显示）──
@@ -240,7 +229,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   // 统计分段（单一数据源，渲染逐段着色）：各段 /cache-bar 独立开关；min 样式去标签。
   const statsSegs = createMemo<StatSeg[]>(() => {
     const s = stats()
-    const plain = props.signals.barStyle() === "min"
+    const plain = props.signals.style() === "min"
     const segs: StatSeg[] = []
     // 段间分隔符：仅当已有内容时插入，避免关闭首段后出现前导「·」
     const sep = () => { if (segs.length) segs.push({ text: " \u00b7 ", color: pal().muted }) }
@@ -263,14 +252,14 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
         segs.push({ text: fmtCompact(total), color: pal().text })
       }
     }
-    if (props.signals.barShowSpeed()) {
-      const tps = lastTps()
-      if (tps !== null) {
-        sep()
-        if (!plain) segs.push({ text: t("barTPS") + " ", color: pal().muted })
-        segs.push({ text: tps.toFixed(1) + " " + t("tokS"), color: pal().text })
-      }
-    }
+    // 性能段固定顺序 首字 → 速度 → 延迟（/cache-bar 开关），与实时块、侧边栏性能区一致；
+    // 标签/开关经 pushPerfSegs 与实时块同口径（dsh：首 Token 文案 + 速度/延迟省去）；
+    // 流式期间宿主将 hint 行整体替换为忙碌行，与右侧实时值天然互斥，不存在同屏双值
+    const sample = lastSample()
+    pushPerfSegs(segs, sep, {
+      style: props.signals.style(), t, sample, tps: sample?.tps ?? null, muted: pal().muted, text: pal().text,
+      ttft: props.signals.barShowTtft(), speed: props.signals.barShowSpeed(), lat: props.signals.barShowLat(),
+    })
     if (props.signals.barShowBalance() && !props.signals.balanceUnsupported()) {
       sep()
       if (!plain) segs.push({ text: t("barBal") + " ", color: pal().muted })
@@ -372,8 +361,9 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 }
 
 /**
- * 输入框行右侧（session_prompt_right）：流式期间显示实时 首字/TPS（文案随 LiveStyle）。
- * busy 时宿主把 hint 行整体替换为忙碌行，输入框右侧不受影响；空闲回落插槽透传。
+ * 输入框行右侧（session_prompt_right）：流式期间显示实时分段（按内容段开关：
+ * 首字/速度/延迟/工具，默认 速度/工具 开）。busy 时宿主把 hint 行整体替换为
+ * 忙碌行，输入框右侧不受影响；无实时内容（非流式或相关段全关）回落插槽透传。
  */
 function PromptRightStatus(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
   const sid = props.sessionId
@@ -387,21 +377,27 @@ function PromptRightStatus(props: { api: TuiPluginApi; signals: PanelSignals; se
     }
   })
 
-  const liveTick = createBusyTick(props.api, () => sid)
+  // 任一实时态段开启才启动心跳与估算（全关 = 无实时显示，纯透传宿主右槽）
+  const anyLiveOn = createMemo(() => anyLiveSegment(props.signals))
+  const liveTick = createBusyTick(props.api, () => sid, anyLiveOn)
   const live = createMemo(() => {
+    if (!anyLiveOn()) return null
     liveTick()
     return computeLivePerf(props.api, sid)
   })
+  const segs = createMemo(() => {
+    const lv = live()
+    if (!lv) return []
+    return liveStatSegs(lv, t, pal().muted, pal().text, props.signals.style(), liveEnabled(props.signals))
+  })
 
   return (
-    <Show when={live()} fallback={<props.api.ui.Slot name="session_prompt_right" session_id={sid} />}>
-      {(lv) => (
-        <text wrapMode="none">
-          <For each={liveStatSegs(lv(), t, pal().muted, pal().text, props.signals.liveStyle())}>
-            {(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}
-          </For>
-        </text>
-      )}
+    <Show when={segs().length > 0} fallback={<props.api.ui.Slot name="session_prompt_right" session_id={sid} />}>
+      <text wrapMode="none">
+        <For each={segs()}>
+          {(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}
+        </For>
+      </text>
     </Show>
   )
 }
@@ -443,16 +439,18 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionPerf, setSectionPerf] = createSignal(true)
   const [perfModelFilter, setPerfModelFilter] = createSignal(true)
-  const [liveStyle, setLiveStyle] = createSignal<LiveStyle>("default")
-  const [barStyle, setBarStyle] = createSignal<BarStyle>("default")
+  const [style, setStyle] = createSignal<DisplayStyle>("default")
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [sectionBottom, setSectionBottom] = createSignal(true)
   const [barShowHit, setBarShowHit] = createSignal(true)
   const [barShowTokens, setBarShowTokens] = createSignal(false)
+  const [barShowTtft, setBarShowTtft] = createSignal(false)
   const [barShowSpeed, setBarShowSpeed] = createSignal(true)
+  const [barShowLat, setBarShowLat] = createSignal(false)
+  const [barShowTool, setBarShowTool] = createSignal(true)
   const [barShowBalance, setBarShowBalance] = createSignal(false)
-  // 底栏流式实时段开关：仅 V2 底栏消费（V1 实时行在输入框右侧，不受此项控制）
-  const [barShowLive, setBarShowLive] = createSignal(false)
+  // 速度段宿主口径开关（/cache-bar 末项；仅 V2 可算，V1 恒回落最近样本）
+  const [tpsHost, setTpsHost] = createSignal(false)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -481,15 +479,17 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionSkills, setSectionSkills,
     sectionPerf, setSectionPerf,
     perfModelFilter, setPerfModelFilter,
-    liveStyle, setLiveStyle,
-    barStyle, setBarStyle,
+    style, setStyle,
     sectionBalance, setSectionBalance,
     sectionBottom, setSectionBottom,
     barShowHit, setBarShowHit,
     barShowTokens, setBarShowTokens,
+    barShowTtft, setBarShowTtft,
     barShowSpeed, setBarShowSpeed,
+    barShowLat, setBarShowLat,
+    barShowTool, setBarShowTool,
     barShowBalance, setBarShowBalance,
-    barShowLive, setBarShowLive,
+    tpsHost, setTpsHost,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
@@ -504,7 +504,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   api.slots.register(createSidebarSlot(api, signals))
 
   // 输入框 hint 行（session_prompt，replace）：重渲染 Prompt 仅替换 hint 行左侧，
-  // 在路径与右侧 token/commands 之间插入 命中率(+趋势) · TPS（精确口径）。
+  // 在路径与右侧 token/commands 之间插入 命中率(+趋势) · 首字 · 速度 · 延迟（精确口径，顺序同实时块）。
   api.slots.register({
     order: 55,
     slots: {
@@ -536,31 +536,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
 
-  // ── 显示偏好恢复：KV 就绪后优先用户设置（/cache-lang、/cache-live-style、/cache-bar-style） ──
+  // ── 显示偏好恢复：KV 就绪后优先用户设置（/cache-lang、/cache-style、/cache-bar） ──
   const restorePrefs = () => {
     try {
-      const saved = api.kv.get<string>(`${KV_PREFIX}.lang`)
-      if (saved && LANG_META.some((m) => m.code === saved)) setLangCode(saved as LangCode)
-      // 旧键迁移：tps_style（default/dsh/min）→ 实时行；底栏仅在 min 时去标签
-      const legacy = api.kv.get<string>(`${KV_PREFIX}.tps_style`)
-      const savedLive = api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? legacy
-      if (savedLive && LIVE_STYLES.some((s) => s.id === savedLive)) setLiveStyle(savedLive as LiveStyle)
-      const savedBar = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? (legacy === "min" ? "min" : "default")
-      if (savedBar && BAR_STYLES.some((s) => s.id === savedBar)) setBarStyle(savedBar as BarStyle)
-      // 底栏内容段开关（默认 命中/速度 开、Tokens/余额 关；live 仅 V2 消费）
-      setBarShowHit(readBarItem(api.kv, "hit"))
-      setBarShowTokens(readBarItem(api.kv, "tokens"))
-      setBarShowSpeed(readBarItem(api.kv, "speed"))
-      setBarShowBalance(readBarItem(api.kv, "balance"))
-      setBarShowLive(readBarItem(api.kv, "live"))
-      // 余额 provider / 自动切换（常驻层恢复；侧栏隐藏也要生效）
-      const savedProvider = api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
-      if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
-        setBalanceProviderId(savedProvider)
-        setBalanceUnsupported(false)
-      }
-      const savedAuto = api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
-      if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
+      restorePanelPrefs(api, signals)
     } catch {}
   }
   if (api.kv.ready) {
@@ -716,39 +695,19 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
     {
-      title: "Cache: Set Live Line Style",
-      value: "cache.livestyle",
-      description: "Choose the real-time display style for the prompt line",
-      slash: { name: "cache-live-style" },
+      title: "Cache: Set Display Style",
+      value: "cache.style",
+      description: "Set the display style for all info segments (default / dsh / minimal)",
+      slash: { name: "cache-style" },
       onSelect: (dialog) => {
         const t = createT(() => langCode())
-        const cur = api.kv.get<string>(`${KV_PREFIX}.style_live`) ?? "default"
+        const cur = api.kv.get<string>(`${KV_PREFIX}.style`) ?? "default"
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={t("liveStyleTitle")}
-            options={liveStyleChoices(signals, cur)}
+            title={t("styleTitle")}
+            options={styleChoices(signals, cur)}
             onSelect={(opt) => {
-              api.ui.toast(applyLiveStyle(api, signals, opt.value))
-              dialog?.clear()
-            }}
-          />
-        ))
-      },
-    },
-    {
-      title: "Cache: Set Status Bar Style",
-      value: "cache.barstyle",
-      description: "Choose the display style for the bottom status bar",
-      slash: { name: "cache-bar-style" },
-      onSelect: (dialog) => {
-        const t = createT(() => langCode())
-        const cur = api.kv.get<string>(`${KV_PREFIX}.style_bar`) ?? "default"
-        dialog?.replace(() => (
-          <api.ui.DialogSelect
-            title={t("barStyleTitle")}
-            options={barStyleChoices(signals, cur)}
-            onSelect={(opt) => {
-              api.ui.toast(applyBarStyle(api, signals, opt.value))
+              api.ui.toast(applyStyle(api, signals, opt.value))
               dialog?.clear()
             }}
           />
@@ -758,7 +717,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     {
       title: "Cache: Toggle Status Bar Items",
       value: "cache.bar",
-      description: "Show or hide items in the bottom status bar (hit / tokens / speed / balance)",
+      description: "Show or hide info segments (hit / tokens / balance / ttft / speed / latency / tool; live while streaming, exact when idle)",
       slash: { name: "cache-bar" },
       onSelect: (dialog) => {
         const t = createT(() => langCode())

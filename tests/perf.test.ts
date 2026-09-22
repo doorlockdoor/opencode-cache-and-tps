@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { estimateTokens, num } from "../src/tokens"
-import { computePerfSample, computeLivePerf, aggregatePerf, modelKeyOf, currentModelKey } from "../src/perf"
+import { computePerfSample, computeLivePerf, aggregatePerf, modelKeyOf, currentModelKey, hostTurnTps } from "../src/perf"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
@@ -412,7 +412,7 @@ function runningToolPart(start: number): Part {
   }
 }
 
-// tool：工具运行中 → 工具计时
+// tool：工具运行中 → 工具计时（无内容产出时冻结值为 null）
 {
   const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [liveAm()], parts: () => [runningToolPart(2000)] })
   const origNow = Date.now
@@ -420,26 +420,70 @@ function runningToolPart(start: number): Part {
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "tool" && lv.toolMs === 1000)
+    assert.ok(lv && lv.phase === "tool" && lv.ttft === null && lv.tps === null && lv.elapsed === null)
   } finally {
     Date.now = origNow
   }
 }
 
-// tool 回合延续 ①：本条消息以 tool-calls 收尾
+// tool：pending（参数仍流式）且无 time.start → 工具计时回退消息创建时刻，不归零
+{
+  const pendingNoTime = {
+    id: "tl", sessionID: "s1", messageID: "m1", type: "tool", callID: "c", tool: "bash",
+    state: { status: "pending" },
+  } as unknown as Part
+  const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [liveAm()], parts: () => [pendingNoTime] })
+  const origNow = Date.now
+  Date.now = () => 3000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "tool" && lv.toolMs === 2000) // 3000 − 1000（created）
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// tool：冻结口径——实时值以活跃工具起点为终点（分子分母同时停摆，即暂停前的最近值），
+// 已完成工具区间照常扣除，工具计时不受影响
+{
+  const longText = "a".repeat(40) // answer 档估算 = 14 tok
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [liveAm()],
+    parts: () => [textPart(1500, longText), toolPart(2000, 3000), runningToolPart(5000)],
+  })
+  const origNow = Date.now
+  Date.now = () => 6000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "tool")
+    if (lv && lv.phase === "tool") {
+      assert.equal(lv.toolMs, 1000)              // 6000 − 5000（活跃工具起点）
+      assert.equal(lv.ttft, 500)                 // 1500 − 1000
+      assert.equal(lv.elapsed, 2500)             // 5000 − 1500 − 1000（已完成工具区间）
+      assert.ok(Math.abs(lv.tps! - 5.6) < 1e-9)  // 14 tok / 2500ms × 1000
+    }
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 工具返回后（本条以 tool-calls 收尾、工具已完成）→ 工具计时在返回时停：
+// 不再计时，由调用方回落最近精确样本（非工具阶段）
 {
   const done = liveAm({ time: { created: 1000, completed: 3000 }, finish: "tool-calls" })
   const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [done], parts: () => [toolPart(1500, 2000)] })
   const origNow = Date.now
   Date.now = () => 4000
   try {
-    const lv = computeLivePerf(api, "s1")
-    assert.ok(lv && lv.phase === "tool" && lv.toolMs === 2500)
+    assert.equal(computeLivePerf(api, "s1"), null)
   } finally {
     Date.now = origNow
   }
 }
 
-// tool 回合延续 ②：工具后的下一步 prefill（上一条以 tool-calls 收尾）
+// 工具返回后、下一步首个 token 前（上一步无内容产出，无本回合历史）→ 非工具阶段：
+// prefill 显示等待时长（4000 - 1000）；无历史可冻结，速度/延迟留空（回落精确）
 {
   const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
   const cur = liveAm({ id: "m1", time: { created: 1000 } })
@@ -452,14 +496,60 @@ function runningToolPart(start: number): Part {
   Date.now = () => 4000
   try {
     const lv = computeLivePerf(api, "s1")
-    assert.ok(lv && lv.phase === "tool" && lv.toolMs === 2800) // 4000 - 1200
+    assert.ok(lv && lv.phase === "prefill" && lv.waitMs === 3000)
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 回合内冻结：首字前等待若本回合已有历史 → 速度/延迟沿用上一步冻结值（不回落精确）
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0" ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)] : []),
+  })
+  const origNow = Date.now
+  Date.now = () => 4000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "prefill" && lv.waitMs === 3000)
+    assert.equal(lv?.ttft, null)                             // 首字段沿用 waitMs
+    assert.equal(lv?.elapsed, 600)                           // 1200 - 600（上一步冻结）
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 回合内冻结：本步刚开始、速度守卫未过（产出 <8 tok）→ 沿用上一步冻结值（不回落精确）
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0"
+      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+      : [textPart(1500, "hi")]),
+  })
+  const origNow = Date.now
+  Date.now = () => 2200
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "streaming")
+    assert.equal(lv?.ttft, 500)                              // 当前步 1500 - 1000
+    assert.equal(lv?.elapsed, 700)                           // 2200 - 1500
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9) // 守卫未过 → 沿用上一步
   } finally {
     Date.now = origNow
   }
 }
 
 // 回归：上一条以 tool-calls 收尾，当前步文本已带首字时间戳 → 正常 streaming
-// （非工具延续）——覆盖 v2 归一化注入 textStart 后的行为
+// （不得误判为工具相位）——覆盖 v2 归一化注入 textStart 后的行为
 {
   const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
   const cur = liveAm({ id: "m1", time: { created: 1000 } })
@@ -499,8 +589,124 @@ function runningToolPart(start: number): Part {
   }
 }
 
+// 跨步回落：纯工具步（无内容产出、工具运行中）→ 工具调用阶段关闭「工具」段时
+// ttft/tps/elapsed 沿用上一步冻结值（显示最近的首字/速度/延迟）
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 2000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0"
+      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+      : [runningToolPart(2500)]),
+  })
+  const origNow = Date.now
+  Date.now = () => 4000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "tool" && lv.toolMs === 1500) // 4000 - 2500
+    assert.equal(lv?.ttft, 100)                               // 上一步 600 - 500
+    assert.equal(lv?.elapsed, 600)                            // 1200 - 600
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)  // 上一步冻结值
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 按字段回落：当前步有内容但速度被守卫记 null（产出过少）→ 速度沿用上一步冻结值，
+// 首字/延迟仍取当前步
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, cur],
+    parts: (mid) => (mid === "m0"
+      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+      : [textPart(1500, "hi"), runningToolPart(2000)]),
+  })
+  const origNow = Date.now
+  Date.now = () => 3000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "tool")
+    assert.equal(lv?.ttft, 500)                               // 当前步 1500 - 1000
+    assert.equal(lv?.elapsed, 500)                            // 2000 - 1500
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)  // 当前步产出过少 → 沿用上一步
+  } finally {
+    Date.now = origNow
+  }
+}
+
+// 回合边界：上一步与当前步之间隔用户消息 → 不回落（三项皆 null）
+{
+  const prev = liveAm({ id: "m0", time: { created: 500, completed: 1500 }, finish: "tool-calls" })
+  const user = { id: "u1", role: "user" } as unknown as Message
+  const cur = liveAm({ id: "m1", time: { created: 1000 } })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [prev, user, cur],
+    parts: (mid) => (mid === "m0" ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)] : [runningToolPart(1500)]),
+  })
+  const origNow = Date.now
+  Date.now = () => 3000
+  try {
+    const lv = computeLivePerf(api, "s1")
+    assert.ok(lv && lv.phase === "tool" && lv.toolMs === 1500) // 3000 - 1500
+    assert.equal(lv?.ttft, null)
+    assert.equal(lv?.tps, null)
+    assert.equal(lv?.elapsed, null)
+  } finally {
+    Date.now = origNow
+  }
+}
+
 // idle / retry → null（回落宿主 Slot）
 assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "idle" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)
 assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)
+
+// ── hostTurnTps：宿主口径（回合聚合、分母含首字等待、仅消息级时间戳）────
+{
+  const s1 = liveAm({
+    id: "a1", time: { created: 1000, streamed: 6000, completed: 6100 },
+    tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  const s2 = liveAm({
+    id: "a2", time: { created: 20000, streamed: 27000, completed: 27100 },
+    tokens: { input: 0, output: 30, reasoning: 20, cache: { read: 0, write: 0 } },
+  })
+  const user = { id: "u0", role: "user" } as unknown as Message
+  // 两步回合：(100+30+20) tok / (5s+7s) = 12.5
+  const api = makeApi({ messages: () => [user, s1, s2], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api, "s1")! - 12.5) < 1e-9)
+
+  // 回合边界：user 之后属于上一回合，不计入（只聚合 s2：50 tok / 7s）
+  const api2 = makeApi({ messages: () => [user, s1, { id: "u1", role: "user" } as unknown as Message, s2], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api2, "s1")! - 50 / 7) < 1e-9)
+
+  // 任一步缺 streamed（进行中 / v1 旧数据）→ null；末尾仅 user（刚提交）→ null
+  const noStream = liveAm({ id: "a3", time: { created: 1000, completed: 2000 } })
+  assert.equal(hostTurnTps(makeApi({ messages: () => [noStream], parts: () => [] }), "s1"), null)
+  assert.equal(hostTurnTps(makeApi({ messages: () => [user], parts: () => [] }), "s1"), null)
+
+  // 回合结束后的 idle 标记在列表尾部：锚定最后一条 assistant，不受影响（s1 单步 100 tok / 5s）
+  const idle = { id: "i0", role: "idle" } as unknown as Message
+  const api3 = makeApi({ messages: () => [user, s1, idle], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api3, "s1")! - 20) < 1e-9)
+
+  // 回合中途的非 assistant 标记（system/skill/shell）跳过而不截断（对齐宿主 inputIndex）：
+  // 两步都计入 → (100+30+20) tok / (5s+7s) = 12.5
+  const sys = { id: "sy1", role: "system" } as unknown as Message
+  const skill = { id: "sk1", role: "skill" } as unknown as Message
+  const shell = { id: "sh1", role: "shell" } as unknown as Message
+  const api4 = makeApi({ messages: () => [user, s1, sys, s2, skill, shell], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api4, "s1")! - 12.5) < 1e-9)
+
+  // synthetic 是回合边界（同宿主）：只聚合 synthetic 之后的步（50 tok / 7s）
+  const synthetic = { id: "sn1", role: "synthetic" } as unknown as Message
+  const api5 = makeApi({ messages: () => [user, s1, synthetic, s2], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api5, "s1")! - 50 / 7) < 1e-9)
+}
 
 console.log("perf tests passed")

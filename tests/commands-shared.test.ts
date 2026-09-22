@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import {
-  applyBarItem, applyBarStyle, applyCurrency, applyLang, applyLiveStyle,
+  applyBarItem, applyStyle, applyCurrency, applyLang,
   applyPerfFilter, applyRate, applySection, configToast,
 } from "../src/commands-shared"
 import type { PanelApi, PanelSignals } from "../src/panel/panel-api"
@@ -86,17 +86,36 @@ function makeApi() {
   assert.match(msg.message, /Tok/)
 }
 
-// ── live / bar style：非法 id 回退 default ──────────────────────────────────
+// ── bar items：tool 默认 on → off（工具计时段，仅流式工具相位消费）──────────
 {
   const { api, store } = makeApi()
   const { signals, calls } = makeSignals()
-  applyLiveStyle(api, signals, "bogus")
-  assert.equal(store.get("cache_panel.style_live"), "default")
-  assert.deepEqual(calls.setLiveStyle, ["default"])
+  const msg = applyBarItem(api, signals, "tool")
+  assert.equal(store.get("cache_panel.bar.tool"), false)
+  assert.deepEqual(calls.setBarShowTool, [false])
+  assert.match(msg.message, /Tool/)
+}
 
-  applyBarStyle(api, signals, "min")
-  assert.equal(store.get("cache_panel.style_bar"), "min")
-  assert.deepEqual(calls.setBarStyle, ["min"])
+// ── 宿主口径速度开关：写 cache_panel.tps_host 并更新信号 ────────────────────
+{
+  const { api, store } = makeApi()
+  const { signals, calls } = makeSignals()
+  const msg = applyBarItem(api, signals, "host")
+  assert.equal(store.get("cache_panel.tps_host"), true)
+  assert.deepEqual(calls.setTpsHost, [true])
+  assert.match(msg.message, /Host TPS/)
+}
+
+// ── display style：非法 id 回退 default；min 去标签生效 ─────────────────────
+{
+  const { api, store } = makeApi()
+  const { signals, calls } = makeSignals()
+  applyStyle(api, signals, "bogus")
+  assert.equal(store.get("cache_panel.style"), "default")
+
+  applyStyle(api, signals, "min")
+  assert.equal(store.get("cache_panel.style"), "min")
+  assert.deepEqual(calls.setStyle, ["default", "min"])
 }
 
 // ── lang / config ───────────────────────────────────────────────────────────

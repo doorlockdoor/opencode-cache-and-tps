@@ -147,7 +147,7 @@ export function createPanelApi(context: Context): PanelApi {
   // partCache 是跨会话的全局表，达到上限时会整表清空并只回填当前会话，
   // 若缓存命中路径不回填，则切回仍命中 normCache 的旧会话时 part() 会返回空。
   // 关键：上游用 Solid `produce` **就地**修改嵌套内容（流式 delta 追加 text、push
-  // part），外层数组引用在内容变化时【不变】——仅比对引用会命中陈旧快照，实时行读到
+  // part），外层数组引用在内容变化时【不变】——仅比对引用会命中陈旧快照，实时块读到
   // 的文本/思考永远停在首次归一化时的空串（estTok=0 → 速度记 null，只显示首字）。
   // 故订阅全量事件流：任一 session.* 事件 revision++；缓存同时校验 revision，内容一变
   // 即失效。事件与 store 更新同源，memo 重算时 revision 已更新。
@@ -168,9 +168,9 @@ export function createPanelApi(context: Context): PanelApi {
   // partCache 的代际：每次整表清空自增，用于判断某会话缓存的 parts 是否已失效。
   let partCacheGeneration = 0
 
-  // ── 实时首字时刻（v2 实时行必需）─────────────────────────────────────────
+  // ── 实时首字时刻（v2 实时块必需）─────────────────────────────────────────
   // v2 的 text part 不携带时间戳，而 session.step.streamed 记录的是响应体「结束」
-  // 边界而非首字；实时行 computeLivePerf 依赖 part.time.start，故订阅三个「内容
+  // 边界而非首字；实时块 computeLivePerf 依赖 part.time.start，故订阅三个「内容
   // 开始」事件，按 assistant 消息记录最早产出时刻，归一化时注入 text part。
   // （V1 SDK 的 text part 自带 time.start，无需此步。）
   const firstOutput = new Map<string, number>()
