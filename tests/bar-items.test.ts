@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { BAR_ITEMS, readBarItem, readDisplayStyle, liveStatSegs, perfLabel, pushPerfSegs, type LiveEnabled, type Translate } from "../src/live"
+import { BAR_ITEMS, TPS_MODES, readBarItem, readDisplayStyle, readTpsMode, liveStatSegs, perfLabel, pushPerfSegs, type LiveEnabled, type Translate } from "../src/live"
 import { KV_PREFIX } from "../src/panel/panel-api"
 
 // ── 内容段注册表默认值：命中/速度/工具 开，Tokens/首字/延迟/余额 关 ──────────
@@ -34,6 +34,20 @@ import { KV_PREFIX } from "../src/panel/panel-api"
   store.set(`${KV_PREFIX}.bar.tokens`, true)
   assert.equal(readBarItem(kv, "hit"), false)
   assert.equal(readBarItem(kv, "tokens"), true)
+}
+
+// ── readTpsMode：新键优先、旧布尔键 tps_host 迁移、非法回落 output ──────────
+{
+  type Kv = Parameters<typeof readTpsMode>[0]
+  const mk = (entries: Record<string, unknown>): Kv =>
+    ({ get: <T>(key: string, fallback?: T): T | undefined => (key in entries ? (entries[key] as T) : fallback) }) as unknown as Kv
+  assert.deepEqual(TPS_MODES.map((m) => m.id), ["output", "perceived"])
+  assert.equal(readTpsMode(mk({})), "output")
+  assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "perceived" })), "perceived")
+  assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "bogus" })), "output")
+  assert.equal(readTpsMode(mk({ "cache_panel.tps_host": true })), "perceived") // 旧键迁移
+  assert.equal(readTpsMode(mk({ "cache_panel.tps_host": false })), "output")
+  assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "output", "cache_panel.tps_host": true })), "output") // 新键优先
 }
 
 // ── liveStatSegs：段开关逐段生效；tool 相位随「工具」项切换 ─────────────────

@@ -296,10 +296,10 @@ export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: Pe
 }
 
 /**
- * 最近一次有效样本（底栏精确 首字/速度/延迟 共用；filterKey 模型过滤口径同
- * aggregatePerf）。取第一条 computePerfSample 非空的消息——三个指标同源同一条
- * step（避免混搭不同 step 的值）；该 step 的 tps 若被守卫记 null 则速度段隐藏，
- * 首字/延迟照常显示。
+ * 最近一次有效样本（filterKey 模型过滤口径同 aggregatePerf）。取第一条
+ * computePerfSample 非空的消息——首字/延迟/输出速度同源同一条 step（避免混搭不同
+ * step 的值）；该 step 的 tps 若被守卫记 null 则速度段隐藏，首字/延迟照常显示。
+ * 体感模式下底栏速度改用 hostTurnTps，本样本仍为 首字/延迟 及速度的回落来源。
  */
 export function lastPerfSample(api: PanelApi, sid: string, filterKey?: string | null): PerfSample | null {
   const msgs = api.state.session.messages(sid) as Message[]
@@ -318,47 +318,101 @@ export function lastPerfSample(api: PanelApi, sid: string, filterKey?: string | 
 
 // ── host-style turn TPS (v2 only) ──
 /**
- * 宿主口径回合 TPS（对齐宿主 AssistantFooter 的 turnTokensPerSecond）：
- * Σ(output+reasoning) / Σ(streamed − created)，分母含每步首字等待，工具时间
- * 天然落在 streamed 之外。仅依赖消息级 time.streamed（v2 schema 专属且持久化，
- * 历史会话可用；v1 消息无此字段 → 恒 null）。回合边界对齐宿主 inputIndex：
- * 只在 idle（回合结束）与 user/synthetic（回合开始）处断开，其余非 assistant
- * （system/skill/shell/切换标记…）跳过而不截断——宿主在回合中途遇到这些消息
- * 仍连续聚合，若在此 break 会丢步、与 footer 口径不一致。忽略 perfModelFilter
- * （回合为整体单元）。任一步缺 created/streamed/completed → null，调用方回落
- * 最近样本口径（v2/status.tsx 速度段）。
+ * 回合切分：user/synthetic/idle 为回合边界（对齐宿主 inputIndex），其余非
+ * assistant 标记（system/skill/shell/切换标记…）跳过而不截断——宿主在回合中途
+ * 遇到这些消息仍连续聚合，若在此断开会丢步、与 footer 口径不一致。
  */
-export function hostTurnTps(api: PanelApi, sid: string): number | null {
+function splitTurns(msgs: readonly Message[]): AssistantMessage[][] {
+  const turns: AssistantMessage[][] = []
+  let cur: AssistantMessage[] | null = null
+  for (const m of msgs) {
+    const role = String((m as { role?: unknown }).role)
+    if (role === "user" || role === "synthetic" || role === "idle") {
+      if (cur) { turns.push(cur); cur = null }
+      continue
+    }
+    if (role !== "assistant") continue
+    cur ??= []
+    cur.push(m as AssistantMessage)
+  }
+  if (cur) turns.push(cur)
+  return turns
+}
+
+/**
+ * 单个回合的宿主口径 TPS（对齐宿主 AssistantFooter 的 turnTokensPerSecond）：
+ * 聚合先除以后（每步按其供应商活跃时长加权）。仅依赖消息级 time.streamed
+ * （v2 schema 专属且持久化，历史会话可用；v1 消息无此字段 → 恒 null）。
+ * 任一步缺 created/streamed/completed、出错或压缩 → 整个回合记 null。
+ */
+function turnTps(steps: readonly AssistantMessage[]): number | null {
+  if (steps.length === 0) return null
+  let tokens = 0
+  let duration = 0
+  for (const am of steps) {
+    if (am.error || am.summary) return null
+    const created = num(am.time?.created)
+    const streamed = num((am.time as { streamed?: unknown } | undefined)?.streamed)
+    const completed = num(am.time?.completed)
+    if (!created || !streamed || !completed || streamed < created) return null
+    tokens += num(am.tokens?.output) + num(am.tokens?.reasoning)
+    duration += streamed - created
+  }
+  if (tokens <= 0 || duration <= 0) return null
+  return (tokens / duration) * 1000
+}
+
+/**
+ * 回合归属模型：取该回合最后一条带模型指纹的 assistant 步骤——模型过滤以回合为
+ * 最小单位（整回合计入或整回合排除），与精确口径的逐消息过滤语义对齐。缺失 → null。
+ */
+function turnModelKey(steps: readonly AssistantMessage[]): string | null {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const k = modelKeyOf(steps[i])
+    if (k) return k
+  }
+  return null
+}
+
+/** 会话级宿主口径 TPS 聚合（底栏「速度」精确值 + 侧边栏「速度」行在体感模式下消费）。 */
+export interface HostTpsStats {
+  last: number | null // 最近一个有效回合的宿主 TPS
+  med: number | null  // 全部有效回合的宿主 TPS 中位数
+  n: number           // 有效回合数
+}
+
+/** HostTpsStats 空值（无有效回合 / 回落；与 EMPTY_PERF 同源约定）。 */
+export const EMPTY_HOST_TPS: HostTpsStats = { last: null, med: null, n: 0 }
+
+/**
+ * 遍历全部回合逐回合计算宿主 TPS（turnTps 唯一口径），聚合为最近值 + 中位数。
+ * filterKey 非空时按回合归属模型过滤（命中 perfModelFilter，整回合计入/排除）。
+ * 无有效回合 → 全空，调用方回落输出速度口径（V1 无 streamed → 恒空 → 自动回落）。
+ */
+export function aggregateHostTps(msgs: readonly Message[], filterKey?: string | null): HostTpsStats {
+  const vals: number[] = []
+  for (const steps of splitTurns(msgs)) {
+    if (filterKey && turnModelKey(steps) !== filterKey) continue
+    const v = turnTps(steps)
+    if (v !== null) vals.push(v)
+  }
+  return {
+    last: vals.length ? vals[vals.length - 1] : null,
+    med: vals.length ? median(vals) : null,
+    n: vals.length,
+  }
+}
+
+/**
+ * 宿主口径回合 TPS（最近一个「有效匹配」回合；v2 底栏精确速度段消费）。内部复用
+ * aggregateHostTps，口径与侧边栏完全一致（同一取值来源）：跳过无效回合，filterKey
+ * 非空时按回合归属模型过滤——末回合不属于该模型时取更早的匹配回合，而非回落输出
+ * 速度。无任何有效回合（如 V1 无 streamed）→ null，调用方回落最近样本输出速度。
+ */
+export function hostTurnTps(api: PanelApi, sid: string, filterKey?: string | null): number | null {
   try {
     const msgs = api.state.session.messages(sid) as Message[]
-    // 锚定最后一条 assistant：回合结束后列表尾部是 idle 等标记，不能从尾直接判型
-    // （与 computeLivePerf 同一锚定模式）
-    let li = -1
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "assistant") { li = i; break }
-    }
-    if (li < 0) return null
-    let tokens = 0
-    let duration = 0
-    let steps = 0
-    for (let i = li; i >= 0; i--) {
-      const m = msgs[i]
-      const role = String((m as { role?: unknown }).role)
-      // 只在回合边界断开，其余非 assistant 跳过（口径见上方说明）
-      if (role === "user" || role === "synthetic" || role === "idle") break
-      if (role !== "assistant") continue
-      const am = m as AssistantMessage
-      if (am.error || am.summary) return null
-      const created = num(am.time?.created)
-      const streamed = num((am.time as { streamed?: unknown } | undefined)?.streamed)
-      const completed = num(am.time?.completed)
-      if (!created || !streamed || !completed || streamed < created) return null
-      tokens += num(am.tokens?.output) + num(am.tokens?.reasoning)
-      duration += streamed - created
-      steps++
-    }
-    if (steps === 0 || tokens <= 0 || duration <= 0) return null
-    return (tokens / duration) * 1000
+    return aggregateHostTps(msgs, filterKey).last
   } catch { return null }
 }
 

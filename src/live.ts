@@ -5,7 +5,7 @@ import type { AssistantMessage } from "@opencode-ai/sdk"
 import { createT, type Translation } from "./i18n"
 import { fmtSec } from "./ui"
 import type { LivePerf, PerfSample } from "./perf"
-import { KV_PREFIX, type PanelApi, type PanelSignals, type DisplayStyle } from "./panel/panel-api"
+import { KV_PREFIX, type PanelApi, type PanelSignals, type DisplayStyle, type TpsMode } from "./panel/panel-api"
 
 // dist/perf 纯统计在 ./dist.ts 与 ./perf.ts：不建响应式依赖，调用方须 untrack。
 
@@ -48,6 +48,15 @@ export const STYLES = [
 ] as const satisfies readonly { id: DisplayStyle; labelKey: keyof Translation }[]
 
 /**
+ * 精确 TPS 计算方式注册表（/cache-tps 菜单与 KV 校验共用）。output 输出速度
+ * （默认，偏解码速度）；perceived 体感速度（对齐宿主 footer，含首字等待，仅 V2 可算）。
+ */
+export const TPS_MODES = [
+  { id: "output",    labelKey: "tpsOutput" },
+  { id: "perceived", labelKey: "tpsPerceived" },
+] as const satisfies readonly { id: TpsMode; labelKey: keyof Translation }[]
+
+/**
  * 内容段开关注册表（/cache-bar、偏好恢复与两壳渲染共用）；default 即 KV 缺失默认值。
  * 每段一个开关管两态：命中率/Tokens/余额为常显精确值；首字/速度/延迟流式时显实时值
  * （V1 输入框右侧 / V2 底栏内联）、回合内间隙冻结为最近实时值、回合结束显精确值；
@@ -63,6 +72,16 @@ export const BAR_ITEMS = [
   { id: "lat",     labelKey: "barLat",  default: false },
   { id: "tool",    labelKey: "barTool", default: true  },
 ] as const satisfies readonly { id: BarItemId; labelKey: keyof Translation; default: boolean }[]
+
+/**
+ * 读取精确 TPS 计算方式及旧键迁移：新键 tps_mode 优先；旧布尔键 tps_host（曾在
+ * /cache-bar 内的宿主速度开关）为 true 时迁移为 perceived；非法/缺失回落 output。
+ */
+export function readTpsMode(kv: PanelApi["kv"]): TpsMode {
+  const saved = kv.get<string>(`${KV_PREFIX}.tps_mode`)
+  if (saved && TPS_MODES.some((m) => m.id === saved)) return saved as TpsMode
+  return kv.get<boolean>(`${KV_PREFIX}.tps_host`, false) ? "perceived" : "output"
+}
 
 /** 读取某个内容段的开关状态（KV 缺失时回落到注册表默认值）。 */
 export function readBarItem(kv: PanelApi["kv"], id: BarItemId): boolean {
@@ -156,7 +175,7 @@ export function liveStatSegs(
 /**
  * 精确性能段（首字/速度/延迟）按固定顺序追加到 out：受各段开关控制、标签经 perfLabel
  * 与实时块同口径。段间分隔由调用方 sep 负责（仅 out 非空时插入）。tps 由调用方给出
- * （V2 宿主口径或最近样本），sample 为最近精确样本（速度取 null 时该段隐藏，首字/延迟照常）。
+ * （V2 体感回合口径或最近样本），sample 为最近精确样本（速度取 null 时该段隐藏，首字/延迟照常）。
  */
 export function pushPerfSegs(
   out: StatSeg[],

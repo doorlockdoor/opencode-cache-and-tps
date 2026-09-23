@@ -16,6 +16,15 @@ export const KV_PREFIX = "cache_panel"
  */
 export type DisplayStyle = "default" | "dsh" | "min"
 
+/**
+ * 精确 TPS 计算方式（唯一注册表见 live.ts TPS_MODES，/cache-tps 设置，作用于
+ * 底栏与侧边栏的精确速度值；实时估算不受影响）：
+ * output 输出速度 = (output+reasoning) / 净生成时长（扣首字等待与工具执行，偏解码速度）；
+ * perceived 体感速度 = Σ(output+reasoning) / Σ(streamed−created)（对齐宿主 footer，
+ * 含每步首字等待；依赖 v2 的 time.streamed，V1 无此字段 → 自动回落输出速度）。
+ */
+export type TpsMode = "output" | "perceived"
+
 /** 会话信息（面板消费的字段；宿主类型过严，用宽松接口）。 */
 export interface PanelSession {
   id: string
@@ -87,6 +96,9 @@ export interface PanelSignals {
   /** 显示样式（/cache-style；default 带标签 / dsh DeepSeek 文案变体 / min 全部去标签）。 */
   style: () => DisplayStyle
   setStyle: (v: DisplayStyle) => void
+  /** 精确 TPS 计算方式（/cache-tps；output 输出速度 / perceived 体感速度，后者仅 V2 可算）。 */
+  tpsMode: () => TpsMode
+  setTpsMode: (v: TpsMode) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
   /** Bottom status bar (prompt hint line) visibility. */
@@ -112,9 +124,6 @@ export interface PanelSignals {
   setBarShowTool: (v: boolean) => void
   barShowBalance: () => boolean
   setBarShowBalance: (v: boolean) => void
-  /** 速度段精确值是否用宿主口径（回合聚合、分母含首字等待；仅 V2 可算，缺数据自动回落最近样本）。 */
-  tpsHost: () => boolean
-  setTpsHost: (v: boolean) => void
   /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void

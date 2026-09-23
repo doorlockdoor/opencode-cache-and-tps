@@ -2,9 +2,9 @@
 // 命令共享层：V1/V2 斜杠命令共用的「选项构建 + 状态应用」（KV/信号/i18n/标题格式）。
 // 宿主对话框控制流差异（V1 dialog.replace / V2 await dialog.select）留在各壳。
 // ---------------------------------------------------------------------------
-import type { PanelApi, PanelSignals, DisplayStyle } from "./panel/panel-api"
+import type { PanelApi, PanelSignals, DisplayStyle, TpsMode } from "./panel/panel-api"
 import { KV_PREFIX } from "./panel/panel-api"
-import { BAR_ITEMS, STYLES, readBarItem, readDisplayStyle, type BarItemId } from "./live"
+import { BAR_ITEMS, STYLES, TPS_MODES, readBarItem, readDisplayStyle, readTpsMode, type BarItemId } from "./live"
 import { CURRENCIES, DEFAULT_RATES } from "./currency"
 import { balanceProviders } from "./balance-providers"
 import { LANG_META, createT, type Translation, type LangCode } from "./i18n"
@@ -19,6 +19,18 @@ const tr = (signals: PanelSignals) => createT(() => signals.langCode())
 
 /** 通用「标签 + [ON/OFF]」选项标题（宽度与旧实现一致）。 */
 export const toggleTitle = (label: string, on: boolean): string => `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
+
+/**
+ * 单选菜单选项（注册表驱动）：标签定宽 + 当前项打勾。
+ * /cache-style、/cache-lang、/cache-tps 的选项构建共用，避免三处重复同一模板。
+ */
+export function radioChoices<T extends string>(
+  items: readonly { id: T; label: string }[],
+  current: string,
+  width: number,
+): Choice<T>[] {
+  return items.map((it) => ({ title: `${visualPadEnd(it.label, width)}${current === it.id ? "\u2713" : ""}`, value: it.id }))
+}
 
 /** 区块 key ↔ i18n 标签键。 */
 const SECTION_LABEL_KEYS: Record<string, keyof Translation> = {
@@ -72,10 +84,7 @@ export function applyPerfFilter(api: PanelApi, signals: PanelSignals): ToastMsg 
 /** 显示样式菜单选项（/cache-style；全段两态共用）。 */
 export function styleChoices(signals: PanelSignals, current: string): Choice<DisplayStyle>[] {
   const t = tr(signals)
-  return STYLES.map((s) => ({
-    title: `${visualPadEnd(t(s.labelKey), 10)}${current === s.id ? "\u2713" : ""}`,
-    value: s.id,
-  }))
+  return radioChoices(STYLES.map((s) => ({ id: s.id, label: t(s.labelKey) })), current, 10)
 }
 
 export function applyStyle(api: PanelApi, signals: PanelSignals, id: string): ToastMsg {
@@ -140,29 +149,14 @@ function barItemSetters(signals: PanelSignals): Record<BarItemId, (v: boolean) =
   }
 }
 
-/** 内容段菜单选项（注册表驱动，7 段）；opts.host 时末尾追加「宿主速度」口径开关（仅 V2 传）。 */
-export function barItemChoices(api: PanelApi, signals: PanelSignals, opts?: { host?: boolean }): Choice<BarItemId | "host">[] {
+/** 内容段菜单选项（注册表驱动，7 段）。速度计算方式已独立为 /cache-tps。 */
+export function barItemChoices(api: PanelApi, signals: PanelSignals): Choice<BarItemId>[] {
   const t = tr(signals)
-  const items: Choice<BarItemId | "host">[] = BAR_ITEMS
-    .map((it) => ({ title: toggleTitle(t(it.labelKey), readBarItem(api.kv, it.id)), value: it.id }))
-  if (opts?.host) {
-    items.push({
-      title: toggleTitle(t("tpsHost"), Boolean(api.kv.get(`${KV_PREFIX}.tps_host`, false))),
-      value: "host",
-    })
-  }
-  return items
+  return BAR_ITEMS.map((it) => ({ title: toggleTitle(t(it.labelKey), readBarItem(api.kv, it.id)), value: it.id }))
 }
 
-export function applyBarItem(api: PanelApi, signals: PanelSignals, id: BarItemId | "host"): ToastMsg {
+export function applyBarItem(api: PanelApi, signals: PanelSignals, id: BarItemId): ToastMsg {
   const t = tr(signals)
-  // 宿主口径速度（V2 专属）：仅影响速度段精确值，缺 time.streamed 时渲染层自动回落
-  if (id === "host") {
-    const cur = Boolean(api.kv.get(`${KV_PREFIX}.tps_host`, false))
-    api.kv.set(`${KV_PREFIX}.tps_host`, !cur)
-    signals.setTpsHost(!cur)
-    return { message: t(!cur ? "sectionShown" : "sectionHidden", { s: t("tpsHost") }) }
-  }
   const cur = readBarItem(api.kv, id)
   api.kv.set(`${KV_PREFIX}.bar.${id}`, !cur)
   barItemSetters(signals)[id](!cur)
@@ -170,10 +164,27 @@ export function applyBarItem(api: PanelApi, signals: PanelSignals, id: BarItemId
   return { message: t(!cur ? "sectionShown" : "sectionHidden", { s: t(item ? item.labelKey : "barItemsTitle") }) }
 }
 
+// ── speed calculation mode（/cache-tps 独立菜单；仅 V2 注册，V1 无 streamed 无法计算体感）──
+
+/** 速度计算方式菜单选项（注册表驱动；当前项打勾，同 /cache-style）。 */
+export function tpsModeChoices(signals: PanelSignals, current: TpsMode): Choice<TpsMode>[] {
+  const t = tr(signals)
+  return radioChoices(TPS_MODES.map((m) => ({ id: m.id, label: t(m.labelKey) })), current, 16)
+}
+
+export function applyTpsMode(api: PanelApi, signals: PanelSignals, id: string): ToastMsg {
+  const t = tr(signals)
+  const hit = TPS_MODES.find((m) => m.id === id)
+  const mode: TpsMode = hit ? hit.id : "output"
+  api.kv.set(`${KV_PREFIX}.tps_mode`, mode)
+  signals.setTpsMode(mode)
+  return { message: t("tpsModeSet", { s: t(hit ? hit.labelKey : "tpsOutput") }) }
+}
+
 // ── preference restore（V1/V2 常驻层共用）───────────────────────────────────
 
 /**
- * 恢复面板偏好：语言、显示样式（含旧键迁移）、内容段开关、宿主速度口径、
+ * 恢复面板偏好：语言、显示样式（含旧键迁移）、内容段开关、速度计算方式（含旧键迁移）、
  * 余额 provider / 自动切换。KV 缺省时保留信号默认值（各注册表 default）。
  * 侧栏隐藏或未挂载也需生效，故由常驻层调用。
  */
@@ -184,7 +195,7 @@ export function restorePanelPrefs(api: PanelApi, signals: PanelSignals): void {
   signals.setPerfModelFilter(api.kv.get<boolean>(`${KV_PREFIX}.perf_model_filter`, true) !== false)
   const setBarItem = barItemSetters(signals)
   for (const it of BAR_ITEMS) setBarItem[it.id](readBarItem(api.kv, it.id))
-  signals.setTpsHost(Boolean(api.kv.get(`${KV_PREFIX}.tps_host`, false)))
+  signals.setTpsMode(readTpsMode(api.kv))
   const provider = api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
   if (typeof provider === "string" && balanceProviders.some((p) => p.id === provider)) {
     signals.setBalanceProviderId(provider)
@@ -197,7 +208,7 @@ export function restorePanelPrefs(api: PanelApi, signals: PanelSignals): void {
 // ── language ────────────────────────────────────────────────────────────────
 
 export function langChoices(current: LangCode): Choice<LangCode>[] {
-  return LANG_META.map((m) => ({ title: `${visualPadEnd(m.label, 9)}${current === m.code ? "\u2713" : ""}`, value: m.code }))
+  return radioChoices(LANG_META.map((m) => ({ id: m.code, label: m.label })), current, 9)
 }
 
 export function applyLang(api: PanelApi, signals: PanelSignals, code: LangCode): ToastMsg {

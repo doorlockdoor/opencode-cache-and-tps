@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { estimateTokens, num } from "../src/tokens"
-import { computePerfSample, computeLivePerf, aggregatePerf, modelKeyOf, currentModelKey, hostTurnTps } from "../src/perf"
+import { computePerfSample, computeLivePerf, aggregatePerf, aggregateHostTps, modelKeyOf, currentModelKey, hostTurnTps } from "../src/perf"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
@@ -707,6 +707,71 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
   const synthetic = { id: "sn1", role: "synthetic" } as unknown as Message
   const api5 = makeApi({ messages: () => [user, s1, synthetic, s2], parts: () => [] })
   assert.ok(Math.abs(hostTurnTps(api5, "s1")! - 50 / 7) < 1e-9)
+
+  // 末回合无效（缺 streamed）时取上一有效回合（原实现返回 null）：s2 = 50/7
+  const api6 = makeApi({ messages: () => [user, s2, { id: "u1", role: "user" } as unknown as Message, noStream], parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api6, "s1")! - 50 / 7) < 1e-9)
+}
+
+// ── aggregateHostTps：逐回合聚合（最近值 + 中位数）；忽略非 assistant 标记 ─────
+{
+  const user = { id: "u0", role: "user" } as unknown as Message
+  const a1 = liveAm({ id: "a1", time: { created: 1000, streamed: 6000, completed: 6100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const a2 = liveAm({ id: "a2", time: { created: 7000, streamed: 12000, completed: 12100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const u1 = { id: "u1", role: "user" } as unknown as Message
+  const b1 = liveAm({ id: "b1", time: { created: 20000, streamed: 22000, completed: 22100 }, tokens: { input: 0, output: 30, reasoning: 20, cache: { read: 0, write: 0 } } })
+  // 回合1 = (100+100)/10s = 20；回合2 = 50/2s = 25
+  const stats = aggregateHostTps([user, a1, u1, b1] as unknown as Message[])
+  assert.equal(stats.n, 2)
+  assert.ok(Math.abs(stats.last! - 25) < 1e-9)
+  assert.ok(Math.abs(stats.med! - 22.5) < 1e-9) // (20+25)/2
+
+  // 无有效回合（缺 streamed）→ 全空（V1 无 streamed → 调用方回落输出速度）
+  const bad = liveAm({ id: "c1", time: { created: 1000, completed: 2000 } })
+  assert.deepEqual(aggregateHostTps([user, bad] as unknown as Message[]), { last: null, med: null, n: 0 })
+
+  // 回合中途的非 assistant 标记（system/skill）跳过而不截断：a1、a2 同回合
+  const sys = { id: "sy1", role: "system" } as unknown as Message
+  const merged = aggregateHostTps([user, a1, sys, a2] as unknown as Message[])
+  assert.equal(merged.n, 1)
+  assert.ok(Math.abs(merged.last! - 20) < 1e-9)
+}
+
+// ── 体感速度 + 模型过滤：按回合归属模型（末步指纹）整回合计入/排除 ─────────────
+{
+  const ux = { id: "ux", role: "user" } as unknown as Message
+  // 回合1 归属 prov/model：100 tok / 2s = 50；回合2 归属 p/fast：100 tok / 1s = 100
+  const slow = liveAm({ id: "s1", time: { created: 1000, streamed: 3000, completed: 3100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const fast = liveAm({ id: "s2", time: { created: 5000, streamed: 6000, completed: 6100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" })
+  const msgs = [ux, slow, ux, fast] as unknown as Message[]
+
+  // 不过滤：两回合
+  const all = aggregateHostTps(msgs)
+  assert.equal(all.n, 2)
+  assert.ok(Math.abs(all.med! - 75) < 1e-9)
+  assert.ok(Math.abs(all.last! - 100) < 1e-9)
+
+  // 过滤到 prov/model → 仅 slow 回合
+  const onlySlow = aggregateHostTps(msgs, "prov/model")
+  assert.equal(onlySlow.n, 1)
+  assert.ok(Math.abs(onlySlow.last! - 50) < 1e-9)
+
+  // 过滤到 p/fast → 仅 fast 回合
+  const onlyFast = aggregateHostTps(msgs, "p/fast")
+  assert.equal(onlyFast.n, 1)
+  assert.ok(Math.abs(onlyFast.last! - 100) < 1e-9)
+
+  // 目标模型无回合 → 全空
+  assert.deepEqual(aggregateHostTps(msgs, "p/nope"), { last: null, med: null, n: 0 })
+
+  // hostTurnTps 统一口径：末回合（fast）不属于目标模型时取更早的匹配回合
+  // （slow=50），与侧边栏 aggregateHostTps.last 一致，而非回落输出速度/返回 null
+  const api = makeApi({ messages: () => msgs, parts: () => [] })
+  assert.ok(Math.abs(hostTurnTps(api, "s1", "prov/model")! - 50) < 1e-9)
+  assert.ok(Math.abs(hostTurnTps(api, "s1", "p/fast")! - 100) < 1e-9)
+  assert.ok(Math.abs(hostTurnTps(api, "s1")! - 100) < 1e-9)
+  // 目标模型无有效回合 → null（调用方回落输出速度）
+  assert.equal(hostTurnTps(api, "s1", "p/nope"), null)
 }
 
 console.log("perf tests passed")

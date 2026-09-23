@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import {
   applyBarItem, applyStyle, applyCurrency, applyLang,
-  applyPerfFilter, applyRate, applySection, configToast,
+  applyPerfFilter, applyRate, applySection, applyTpsMode, configToast,
 } from "../src/commands-shared"
 import type { PanelApi, PanelSignals } from "../src/panel/panel-api"
 
@@ -96,14 +96,18 @@ function makeApi() {
   assert.match(msg.message, /Tool/)
 }
 
-// ── 宿主口径速度开关：写 cache_panel.tps_host 并更新信号 ────────────────────
+// ── 速度计算方式（/cache-tps）：写 cache_panel.tps_mode 并更新信号；非法值回落 output ──
 {
   const { api, store } = makeApi()
   const { signals, calls } = makeSignals()
-  const msg = applyBarItem(api, signals, "host")
-  assert.equal(store.get("cache_panel.tps_host"), true)
-  assert.deepEqual(calls.setTpsHost, [true])
-  assert.match(msg.message, /Host TPS/)
+  const msg = applyTpsMode(api, signals, "perceived")
+  assert.equal(store.get("cache_panel.tps_mode"), "perceived")
+  assert.deepEqual(calls.setTpsMode, ["perceived"])
+  assert.match(msg.message, /Perceived Speed/)
+
+  applyTpsMode(api, signals, "bogus")
+  assert.equal(store.get("cache_panel.tps_mode"), "output")
+  assert.equal(calls.setTpsMode[1], "output")
 }
 
 // ── display style：非法 id 回退 default；min 去标签生效 ─────────────────────

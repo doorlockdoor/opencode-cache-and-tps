@@ -9,8 +9,8 @@ import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } f
 import { createT } from "../i18n"
 import {
   applyBarItem, applyStyle, applyCurrency, applyLang,
-  applyPerfFilter, applyRate, applySection, barItemChoices,
-  configToast, currencyChoices, langChoices, sectionChoices, styleChoices,
+  applyPerfFilter, applyRate, applySection, applyTpsMode, barItemChoices,
+  configToast, currencyChoices, langChoices, sectionChoices, styleChoices, tpsModeChoices,
   type ToastMsg,
 } from "../commands-shared"
 
@@ -162,9 +162,23 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       palette: true,
       slash: { name: "cache-bar" },
       run: async () => {
-        const opt = await context.ui.dialog.select({ title: t()("barItemsTitle"), options: barItemChoices(api, signals, { host: true }) })
+        const opt = await context.ui.dialog.select({ title: t()("barItemsTitle"), options: barItemChoices(api, signals) })
         if (!opt) return
         show(applyBarItem(api, signals, opt))
+      },
+    },
+    // ── /cache-tps ──
+    {
+      id: "opencode-visual-cache.cache.tps",
+      title: "Cache: Set Speed Calculation",
+      description: "Exact TPS calc: output speed (decode only) or perceived speed (host footer, incl. first-token wait; v2 only), affecting bottom bar and sidebar",
+      group: "Cache",
+      palette: true,
+      slash: { name: "cache-tps" },
+      run: async () => {
+        const opt = await context.ui.dialog.select({ title: t()("tpsModeTitle"), options: tpsModeChoices(signals, signals.tpsMode()) })
+        if (!opt) return
+        show(applyTpsMode(api, signals, opt))
       },
     },
     // ── /cache-section ──

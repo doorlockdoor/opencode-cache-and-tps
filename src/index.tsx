@@ -28,7 +28,7 @@ import { computeLivePerf, lastPerfSample, currentModelKey } from "./perf"
 import { FALLBACK, MAX_SAT, desaturateTo, fmtCost, visualWidth, truncateVisual } from "./ui"
 import { fmtCompact, formatBalanceText } from "./currency"
 import { liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, createBusyTick, type StatSeg } from "./live"
-import { KV_PREFIX, type BalanceState, type PanelSignals, type DisplayStyle } from "./panel/panel-api"
+import { KV_PREFIX, type BalanceState, type PanelSignals, type DisplayStyle, type TpsMode } from "./panel/panel-api"
 import { TokenCachePanel } from "./panel/TokenCachePanel"
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
@@ -449,8 +449,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [barShowLat, setBarShowLat] = createSignal(false)
   const [barShowTool, setBarShowTool] = createSignal(true)
   const [barShowBalance, setBarShowBalance] = createSignal(false)
-  // 速度段宿主口径开关（/cache-bar 末项；仅 V2 可算，V1 恒回落最近样本）
-  const [tpsHost, setTpsHost] = createSignal(false)
+  // 精确 TPS 计算方式（/cache-tps，仅 V2 注册；V1 无 time.streamed，体感速度自动回落输出速度）
+  const [tpsMode, setTpsMode] = createSignal<TpsMode>("output")
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -489,7 +489,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     barShowLat, setBarShowLat,
     barShowTool, setBarShowTool,
     barShowBalance, setBarShowBalance,
-    tpsHost, setTpsHost,
+    tpsMode, setTpsMode,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,

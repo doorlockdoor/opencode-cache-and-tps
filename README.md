@@ -7,6 +7,7 @@ Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 
 **显示样式**：
 - `/cache-style`，设置底部信息样式，包括默认、DSH、极简。
+- `/cache-tps`，设置TPS的计算方式，默认显示输出速度，可选体感速度（opencode计算方式）。
 - `/cache-bar`，设置底部信息开关，默认显示命中率+速度+工具（仅在调用工具时显示），全部选项包括：命中率/Tokens/余额/首字/速度/延迟/工具。
 
 **信息包含**：

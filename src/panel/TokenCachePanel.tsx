@@ -8,7 +8,7 @@ import { PLUGIN_VERSION } from "../_version"
 import { balanceProviders, getBalanceProvider, type BalanceDetail, type BalanceDetailKey, type BalanceEntry, type BalanceProvider } from "../balance-providers"
 import { createT, type Translation } from "../i18n"
 import { num } from "../tokens"
-import { aggregatePerf, currentModelKey, EMPTY_PERF, type PerfStats } from "../perf"
+import { aggregateHostTps, aggregatePerf, currentModelKey, EMPTY_HOST_TPS, EMPTY_PERF, type PerfStats } from "../perf"
 import { collectTokenDist, type TokenDist } from "../dist"
 import { collectUsage } from "../stats"
 import { shallowEqual, createThrottledBumper } from "../util"
@@ -73,6 +73,7 @@ export function TokenCachePanel(props: {
     sectionSkills, setSectionSkills,
     sectionPerf, setSectionPerf,
     perfModelFilter, setPerfModelFilter,
+    tpsMode,
     sectionBalance, setSectionBalance,
     balanceRefresh,
     balanceProviderId, setBalanceProviderId,
@@ -146,6 +147,7 @@ export function TokenCachePanel(props: {
     hasDistData: false,
     perf: { ...EMPTY_PERF },
     hasPerf: false,
+    hostTps: { ...EMPTY_HOST_TPS },
     perfCtx: "",
     skills: [] as { name: string; tokens: number }[],
     hasSkills: false,
@@ -208,6 +210,9 @@ export function TokenCachePanel(props: {
       try {
         const { dist, hasDistData, skills } = collectTokenDist(props.api, msgs, session)
         const perf = aggregatePerf(props.api, msgs, { modelKey: perfCtxKey || undefined })
+        // 宿主口径 TPS（体感模式）：仅消息级时间戳、与 part 水合无关，无闪烁 → 直接计算。
+        // 模型过滤同精确口径：perfCtxKey 非空时按回合归属模型过滤（整回合计入/排除）。
+        const hostTps = aggregateHostTps(msgs, perfCtxKey || undefined)
         // 回退快照的有效性取决于过滤上下文：上下文一致时（part() 重新水合等
         // 瞬态）沿用最近有效快照保持面板稳定；模型切换后上下文变化即不复用。
         // perfCtxKey ""=全局（null 键）。
@@ -217,6 +222,7 @@ export function TokenCachePanel(props: {
           finalDist: hasDistData ? dist : lastDist(), finalHasDist: hasDistData || lastHasDist(),
           finalPerf: fallbackOk ? (perf.hasPerf ? perf : lastPerf()) : EMPTY_PERF,
           finalHasPerf: fallbackOk,
+          hostTps,
           perfCtx: perfCtxKey,
           skills,
         }
@@ -225,6 +231,7 @@ export function TokenCachePanel(props: {
         return {
           finalDist: lastDist(), finalHasDist: lastHasDist(),
           finalPerf: lastPerf(), finalHasPerf: lastHasPerf(),
+          hostTps: EMPTY_HOST_TPS,
           perfCtx: "",
           skills: [] as { name: string; tokens: number }[],
         }
@@ -238,6 +245,7 @@ export function TokenCachePanel(props: {
       trend, hasTrendData, providerName, sessionHitRate,
       dist: distData.finalDist, hasDistData: distData.finalHasDist,
       perf: distData.finalPerf, hasPerf: distData.finalHasPerf,
+      hostTps: distData.hostTps,
       perfCtx: distData.perfCtx,
       skills: distData.skills, hasSkills: distData.skills.length > 0,
     })
@@ -466,17 +474,27 @@ export function TokenCachePanel(props: {
       p.latMed !== null ? t("perfAvg", { v: fmtMs(p.latMed) }) : null)
   })
 
+  // 速度行口径由 /cache-tps 决定：体感模式且有有效回合 → 取回合聚合的宿主 TPS
+  // （无有效回合——如 V1 无 streamed——回落输出速度口径）。可见性与取值共用此判定。
+  const useHostTps = createMemo(() => tpsMode() === "perceived" && data().hostTps.n > 0)
+  // 性能区可见性：有精确样本即显示；体感模式下即使精确样本缺失（如 v2 历史
+  // 文本步无首字时间戳）但有宿主回合 TPS 时同样显示（仅速度行）。
+  const perfVisible = createMemo(() => data().perf.hasPerf || useHostTps())
+
   const perfRows = createMemo<string[]>(() => {
     const p = data().perf
-    if (!p.hasPerf) return []
+    if (!perfVisible()) return []
     const rows: string[] = []
     if (p.ttftLast !== null) {
       rows.push(perfRow(t("perfTTFT"), fmtMs(p.ttftLast),
         p.ttftMed !== null ? t("perfAvg", { v: fmtMs(p.ttftMed) }) : null))
     }
-    if (p.tpsLast !== null) {
-      rows.push(perfRow(t("perfTPS"), p.tpsLast.toFixed(1) + " " + t("tokS"),
-        p.tpsMed !== null ? t("perfAvg", { v: p.tpsMed.toFixed(1) }) : null))
+    const host = data().hostTps
+    const tpsLast = useHostTps() ? host.last : p.tpsLast
+    const tpsMed = useHostTps() ? host.med : p.tpsMed
+    if (tpsLast !== null) {
+      rows.push(perfRow(t("perfTPS"), tpsLast.toFixed(1) + " " + t("tokS"),
+        tpsMed !== null ? t("perfAvg", { v: tpsMed.toFixed(1) }) : null))
     }
     const lr = latRow()
     if (lr) rows.push(lr)
@@ -622,7 +640,7 @@ export function TokenCachePanel(props: {
 
           {/* ── performance: TTFT / TPS / latency (collapsible, default open) ── */}
           <Show when={sectionPerf()}>
-          <Show when={data().hasPerf}>
+          <Show when={perfVisible()}>
             {<text onMouseUp={() => setPerfOpen((o) => { const n = !o; persistFold("perf", n); return n })}>
               <span style={{ fg: pal().muted }}>{perfOpen() ? "\u25bc " : "\u25b6 "}</span>
               <span style={{ fg: pal().primary }}><b>{t("secPerf")}</b></span>

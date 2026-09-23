@@ -4,7 +4,7 @@ import { createSignal, createEffect, onMount, onCleanup, untrack } from "solid-j
 import type { Context } from "./types"
 import { createPanelApi } from "./panel-api"
 import { TokenCachePanel } from "../panel/TokenCachePanel"
-import type { BalanceState, PanelApi, PanelSignals, DisplayStyle } from "../panel/panel-api"
+import type { BalanceState, PanelApi, PanelSignals, DisplayStyle, TpsMode } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
 import { StatusView } from "./status"
 import { mapTheme } from "./theme"
@@ -45,8 +45,8 @@ function createPanelSignals(): Signals {
   const [barShowLat, setBarShowLat] = createSignal(false)
   const [barShowTool, setBarShowTool] = createSignal(true)
   const [barShowBalance, setBarShowBalance] = createSignal(false)
-  // 速度段宿主口径开关（/cache-bar 末项；仅 V2 可算，V1 恒回落最近样本）
-  const [tpsHost, setTpsHost] = createSignal(false)
+  // 精确 TPS 计算方式（/cache-tps；output 输出速度默认，perceived 体感速度仅 V2 可算）
+  const [tpsMode, setTpsMode] = createSignal<TpsMode>("output")
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -76,7 +76,7 @@ function createPanelSignals(): Signals {
     barShowLat, setBarShowLat,
     barShowTool, setBarShowTool,
     barShowBalance, setBarShowBalance,
-    tpsHost, setTpsHost,
+    tpsMode, setTpsMode,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,

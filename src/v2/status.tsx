@@ -17,6 +17,8 @@ import { createBusyTick, liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs
  * 内容段由 /cache-bar 逐段开关（默认 命中/速度/工具 开）；流式期间实时块接管
  * 速度/首字/延迟 槽位显示实时值——同一段信息同一时刻只出现一次，回合内间隙冻结为
  * 最近实时值、回合结束回落精确值，与 V1（右侧实时行 + 底栏精确段）口径一致。
+ * 精确速度的计算方式由 /cache-tps 决定（输出/体感，同时作用于侧边栏）；体感模式取
+ * 宿主回合口径，故速度不再与首字/延迟同源（首字/延迟仍取最近精确样本）。
  * 颜色与侧边栏同源（mapTheme → desaturateTo）。
  * 仅会话内渲染：宿主在首页 Prompt 下方也挂此插槽（sessionID 为空），此时隐藏。
  */
@@ -69,12 +71,19 @@ export function StatusView(props: {
     return Math.abs(d) < 0.05 ? null : d
   })
 
+  // ── 模型过滤键（过滤关闭 / 会话未知 → null=不过滤）：lastSample 与精确速度段共用，
+  // 避免各自调用 currentModelKey（其回退分支会遍历全部消息）──
+  const modelKey = createMemo(() => {
+    const id = sid()
+    if (!id || !props.signals.perfModelFilter()) return null
+    return currentModelKey(props.api, id)
+  })
+
   // ── 最近精确样本（首字/速度/延迟三段同源：lastPerfSample，模型过滤同侧边栏）──
   const lastSample = createMemo(() => {
     const id = sid()
     if (!id) return null
-    const mk = props.signals.perfModelFilter() ? currentModelKey(props.api, id) : null
-    return lastPerfSample(props.api, id, mk)
+    return lastPerfSample(props.api, id, modelKey())
   })
 
   // ── 流式实时块（段开关：首字/速度/延迟/工具，默认 速度/工具 开）：busy 时接管
@@ -122,16 +131,19 @@ export function StatusView(props: {
     }
     // 性能段槽位（固定顺序 首字 → 速度 → 延迟，与实时块、侧边栏性能区一致）：
     // 流式实时块非空时由其接管（实时值，位置不变）——computeLivePerf 回合内冻结，
-    // busy 期间几乎总非空；否则显示 /cache-bar 控制的精确值（最近样本；同一条 step 三个指标同源）
+    // busy 期间几乎总非空；否则显示精确值：首字/延迟取最近精确样本，速度按 /cache-tps
+    // 取输出速度（最近样本）或体感速度（宿主回合聚合，缺数据回落最近样本）
     const lvBlock = liveSegs()
     if (lvBlock.length > 0) {
       sep()
       out.push(...lvBlock)
     } else {
       const sample = lastSample()
-      // 精确口径：宿主开关开启 → 回合聚合（含首字等待，对齐宿主 footer；缺 streamed 自动回落最近样本）
-      const tps = props.signals.tpsHost()
-        ? (hostTurnTps(props.api, sid()) ?? sample?.tps ?? null)
+      // 精确口径：体感模式 → 最近一个有效匹配回合（含首字等待，对齐宿主 footer；
+      // 缺 streamed 自动回落输出速度）。与侧边栏 aggregateHostTps.last 同源：末回合不
+      // 属于当前模型时取更早的匹配回合（整回合计入/排除），而非回落输出速度。
+      const tps = props.signals.tpsMode() === "perceived"
+        ? (hostTurnTps(props.api, sid(), modelKey()) ?? sample?.tps ?? null)
         : (sample?.tps ?? null)
       pushPerfSegs(out, sep, {
         style: props.signals.style(), t, sample, tps, muted: pal().muted, text: pal().text,
