@@ -1,9 +1,9 @@
 ## Introduction
 
-Forked from opencode-visual-cache, adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
+Forked from [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-cache), adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
 > ✅ Updated for opencode v2 compatibility.
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-cache-and-tps/master/assets/screen_shot_01.png" width="100%"></img>
 
 **Display styles**:
 - `/cache-style` — set the bottom info style: Default, DSH, or Minimal.
@@ -23,12 +23,35 @@ Forked from opencode-visual-cache, adding first-token latency (TTFT), generation
 - ASCII: 4.0 for reasoning streams, 2.9 for answer text, 3.7 for tools & code, 3.3 default for prose.
 - Full-width punctuation and full-width characters are counted as 1.
 
+## Installation
+
+For v2, edit `~/.config/opencode/cli.json` and add the package name. Do not use `opencode plugin add`, see the upstream documentation for details.
+
+```jsonc
+{
+    "plugins": [
+        {
+            "package": "opencode-cache-and-tps@latest",
+            "options": {
+                "enabled": true
+            }
+        }
+    ]
+}
+```
+
+For v1, press `Ctrl + P` in OpenCode to open the command palette, search for `install plugin`, and enter:
+
+```
+opencode-cache-and-tps@latest
+```
+
 ## Local Build
 
 Run `npm run build`, then copy the artifacts to `~/.config/opencode/plugins`.
 
 ```powershell
-npm run build; $dst = "~\.config\opencode\plugins\opencode-visual-cache"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
+npm run build; $dst = "~\.config\opencode\plugins\opencode-cache-and-tps"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
 ```
 
 Edit `~/.config/opencode/package.json` to add the dependency.
@@ -50,7 +73,7 @@ For v1 you also need to edit `~/.config/opencode/tui.json` to add the local TUI 
     "$schema": "https://opencode.ai/tui.json",
     "plugin": [
         // ...
-        "./plugins/opencode-visual-cache/dist/tui.js"
+        "./plugins/opencode-cache-and-tps/dist/tui.js"
     ]
 }
 ```

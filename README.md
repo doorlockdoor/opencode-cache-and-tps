@@ -1,9 +1,9 @@
 ## 介绍
 
-Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS）等信息，支持实时刷新。
+Fork自[opencode-visual-cache](https://github.com/Hotakus/opencode-visual-cache)，新增首字延迟（TTFT），生成速度（TPS）等信息，支持实时刷新。
 > ✅已更新兼容opencode v2。
 
-<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-visual-cache/master/assets/screen_shot_01.png" width="100%"></img>
+<img src="https://raw.githubusercontent.com/doorlockdoor/opencode-cache-and-tps/master/assets/screen_shot_01.png" width="100%"></img>
 
 **显示样式**：
 - `/cache-style`，设置底部信息样式，包括默认、DSH、极简。
@@ -23,12 +23,37 @@ Fork自opencode-visual-cache，新增首字延迟（TTFT），生成速度（TPS
 - ASCII：思考流4.0，答案文本2.9，工具与代码3.7，散文默认3.3。
 - 全角标点与全角字符按1处理。
 
+## 安装
+
+V2版本，编辑`~/.config/opencode/cli.json`，添加包名。
+
+> 不要使用 `opencode plugin add`，理由详见上游。
+
+```jsonc
+{
+    "plugins": [
+        {
+            "package": "opencode-cache-and-tps@latest",
+            "options": {
+                "enabled": true
+            }
+        }
+    ]
+}
+```
+
+V1版本，在 OpenCode 中按 `Ctrl + P` 打开命令面板，搜索 `install plugin`，输入：
+
+```
+opencode-cache-and-tps@latest
+```
+
 ## 本地构建
 
 `npm run build`，然后复制目标文件到`~/.config/opencode/plugins`。
 
 ```powershell
-npm run build; $dst = "~\.config\opencode\plugins\opencode-visual-cache"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
+npm run build; $dst = "~\.config\opencode\plugins\opencode-cache-and-tps"; New-Item -ItemType Directory -Force "$dst\dist" | Out-Null; Copy-Item tui.js "$dst\tui.js" -Force; Copy-Item dist\tui.js "$dst\dist\tui.js" -Force; Copy-Item dist\v2.js "$dst\dist\v2.js" -Force
 ```
 
 编辑`~/.config/opencode/package.json`，添加依赖。
@@ -50,7 +75,7 @@ V1需要额外编辑`~/.config/opencode/tui.json`，添加本地TUI插件。
     "$schema": "https://opencode.ai/tui.json",
     "plugin": [
         // ...
-        "./plugins/opencode-visual-cache/dist/tui.js"
+        "./plugins/opencode-cache-and-tps/dist/tui.js"
     ]
 }
 ```
