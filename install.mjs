@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Local-build installer for opencode-visual-cache.
+ * Local-build installer for opencode-cache-and-tps.
  *
  * 按 README「本地构建」的方式安装（不依赖 npm 发布）：
  *   1. 执行 `npm run build`（可用 `--no-build` 跳过）
  *   2. 复制构建产物到 `~/.config/opencode/plugins`
- *      - v2：`tui.js` + `dist/tui.js` + `dist/v2.js` → `<plugins>/opencode-visual-cache/`
+ *      - v2：`tui.js` + `dist/tui.js` + `dist/v2.js` → `<plugins>/opencode-cache-and-tps/`
  *            （v2 自动发现该目录，无需写入 cli.json；同时清理会重复加载的旧条目）
- *      - v1：在 `tui.json` 注册 `<plugins>/opencode-visual-cache/dist/tui.js`
+ *      - v1：在 `tui.json` 注册 `<plugins>/opencode-cache-and-tps/dist/tui.js`
  *            （复用 v2 目录里的同一 V1 bundle，**不放**顶层 `plugins/*.js`——否则
  *             opencode 2.x server 会把 `plugins/` 下的 .js 当 server 插件加载，而
  *             TUI 插件依赖 @opentui/*，会因环境变量重复注册而加载失败）
@@ -33,7 +33,7 @@ import { spawnSync } from "node:child_process"
 const repoRoot = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf-8"))
 const PKG_NAME = String(pkg.name)
-const BASE = PKG_NAME.split("/").pop() || "opencode-visual-cache"
+const BASE = PKG_NAME.split("/").pop() || "opencode-cache-and-tps"
 const V1_PLUGIN_FILE = `${BASE}.js`
 const V2_PLUGIN_DIR = BASE
 const OPEN_TUI_SOLID = pkg.devDependencies?.["@opentui/solid"] ?? "^0.5.1"
@@ -79,14 +79,14 @@ function isOurs(entry) {
 }
 
 async function build() {
-  if (skipBuild) { console.log("[opencode-visual-cache] --no-build：跳过构建"); return }
+  if (skipBuild) { console.log("[opencode-cache-and-tps] --no-build：跳过构建"); return }
   // npm 分发的包不含源码（files 只带 dist/tui.js 与 tui.js），此时无法本地构建。
   // 直接使用随包提供的 dist/ 产物，避免已安装包运行 bin 时因缺 src/build.tui.mjs 必然失败。
   if (!(await exists(join(repoRoot, "src"))) || !(await exists(join(repoRoot, "build.tui.mjs")))) {
-    console.log("[opencode-visual-cache] 未发现源码（src/build.tui.mjs），跳过构建，使用现有 dist/")
+    console.log("[opencode-cache-and-tps] 未发现源码（src/build.tui.mjs），跳过构建，使用现有 dist/")
     return
   }
-  console.log("[opencode-visual-cache] 构建中：npm run build")
+  console.log("[opencode-cache-and-tps] 构建中：npm run build")
   const r = spawnSync("npm run build", { cwd: repoRoot, stdio: "inherit", shell: true })
   if (r.status !== 0) throw new Error(`构建失败（exit ${r.status}）`)
 }

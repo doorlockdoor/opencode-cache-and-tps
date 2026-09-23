@@ -164,7 +164,7 @@ function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals 
 }
 
 export default {
-  id: "opencode-visual-cache",
+  id: "opencode-cache-and-tps",
   setup(context: Context) {
     const api = createPanelApi(context)
     const signals = createPanelSignals()

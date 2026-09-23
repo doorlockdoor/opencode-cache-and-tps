@@ -96,7 +96,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
   return [
     // ── /cache-currency ──
     {
-      id: "opencode-visual-cache.cache.currency",
+      id: "opencode-cache-and-tps.cache.currency",
       title: "Cache: Set Currency",
       description: "Change the currency unit for cost display",
       group: "Cache",
@@ -110,7 +110,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-rate ──
     {
-      id: "opencode-visual-cache.cache.rate",
+      id: "opencode-cache-and-tps.cache.rate",
       title: "Cache: Set Exchange Rate",
       description: "Set the exchange rate multiplier for the selected currency",
       group: "Cache",
@@ -130,7 +130,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-perf-filter ──
     {
-      id: "opencode-visual-cache.cache.perffilter",
+      id: "opencode-cache-and-tps.cache.perffilter",
       title: "Cache: Toggle Perf Model Filter",
       description: "Filter performance stats (TTFT/TPS/latency) to the current session model",
       group: "Cache",
@@ -140,7 +140,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-style ──
     {
-      id: "opencode-visual-cache.cache.style",
+      id: "opencode-cache-and-tps.cache.style",
       title: "Cache: Set Display Style",
       description: "Set the display style for all info segments (default / dsh / minimal)",
       group: "Cache",
@@ -155,7 +155,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-bar ──
     {
-      id: "opencode-visual-cache.cache.bar",
+      id: "opencode-cache-and-tps.cache.bar",
       title: "Cache: Toggle Status Bar Items",
       description: "Show or hide info segments (hit / tokens / balance / ttft / speed / latency / tool; live while streaming, exact when idle)",
       group: "Cache",
@@ -169,7 +169,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-tps ──
     {
-      id: "opencode-visual-cache.cache.tps",
+      id: "opencode-cache-and-tps.cache.tps",
       title: "Cache: Set Speed Calculation",
       description: "Exact TPS calc: output speed (decode only) or perceived speed (host footer, incl. first-token wait; v2 only), affecting bottom bar and sidebar",
       group: "Cache",
@@ -183,7 +183,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-section ──
     {
-      id: "opencode-visual-cache.cache.section",
+      id: "opencode-cache-and-tps.cache.section",
       title: "Cache: Toggle Section",
       description: "Show or hide a sidebar section",
       group: "Cache",
@@ -197,7 +197,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-config ──
     {
-      id: "opencode-visual-cache.cache.config",
+      id: "opencode-cache-and-tps.cache.config",
       title: "Cache: Show Config",
       description: "Display the current plugin configuration",
       group: "Cache",
@@ -207,7 +207,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-lang ──
     {
-      id: "opencode-visual-cache.cache.lang",
+      id: "opencode-cache-and-tps.cache.lang",
       title: "Cache: Switch Language",
       description: "Switch display language (Chinese / English / 日本語 / 한국어)",
       group: "Cache",
@@ -222,7 +222,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-balance ──
     {
-      id: "opencode-visual-cache.cache.balance",
+      id: "opencode-cache-and-tps.cache.balance",
       title: "Cache: Switch Balance Provider",
       description: "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
       group: "Cache",
@@ -261,7 +261,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-balance-key ──
     {
-      id: "opencode-visual-cache.cache.balance.key",
+      id: "opencode-cache-and-tps.cache.balance.key",
       title: "Cache: Set Balance API Key",
       description: "Select a provider and set its API key for balance display",
       group: "Cache",
@@ -284,7 +284,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-debug-skills ──
     {
-      id: "opencode-visual-cache.cache.debug-skills",
+      id: "opencode-cache-and-tps.cache.debug-skills",
       title: "Cache: Debug Skills Detection",
       description: "Dump all tool parts found in the current session for skill detection debugging",
       group: "Cache",
@@ -321,7 +321,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-session ──
     {
-      id: "opencode-visual-cache.cache.session",
+      id: "opencode-cache-and-tps.cache.session",
       title: "Cache: Sub-Agent Stats",
       description: "View token cache statistics for a sub-agent by session ID",
       group: "Cache",
@@ -398,7 +398,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     },
     // ── /cache-session-back ──
     {
-      id: "opencode-visual-cache.cache.session.back",
+      id: "opencode-cache-and-tps.cache.session.back",
       title: "Cache: Back to Main",
       description: "Return to main session stats",
       group: "Cache",

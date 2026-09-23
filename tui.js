@@ -7,7 +7,7 @@ import tuiMod from "./dist/tui.js"
 import v2Mod from "./dist/v2.js"
 
 export default {
-  id: "opencode-visual-cache",
+  id: "opencode-cache-and-tps",
   tui: tuiMod.tui,
   setup: v2Mod.setup,
 }

@@ -1,7 +1,7 @@
 {
-  "name": "opencode-visual-cache",
+  "name": "opencode-cache-and-tps",
   "version": "1.7.1",
-  "description": "OpenCode TUI plugin displaying real-time token cache hit rate in the sidebar",
+  "description": "OpenCode TUI plugin displaying real-time token cache hit rate, TTFT and TPS in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
   "exports": {
@@ -19,7 +19,7 @@
     "README_EN.md"
   ],
   "bin": {
-    "opencode-visual-cache": "install.mjs"
+    "opencode-cache-and-tps": "install.mjs"
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && node build.tui.mjs && tsc",
@@ -53,7 +53,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hotakus/opencode-visual-cache.git"
+    "url": "git+https://github.com/doorlockdoor/opencode-cache-and-tps.git"
   },
   "license": "MIT",
   "peerDependencies": {
