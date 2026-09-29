@@ -9,6 +9,7 @@ import { KV_PREFIX } from "../panel/panel-api"
 import { StatusView } from "./status"
 import { mapTheme } from "./theme"
 import { makeCommands, findOpencodeKeyV2, currentSessionID } from "./commands"
+import { credentialsDbReady } from "./credentials"
 import { restorePanelPrefs } from "../commands-shared"
 import { getBalanceProvider } from "../balance-providers"
 import { syncAutoBalance } from "../balance"
@@ -106,8 +107,12 @@ function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals 
 
   const pollBalance = async () => {
     const provider = getBalanceProvider(props.signals.balanceProviderId())
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-      || findOpencodeKeyV2(provider)
+    let key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+    if (!key) {
+      // V2 凭据保存在宿主 SQLite：等库就绪再解析，避免首轮回退到过期的 auth.json
+      await credentialsDbReady()
+      key = findOpencodeKeyV2(props.context, provider)
+    }
     const set = props.signals.setBalanceState
     if (props.signals.balanceUnsupported()) { set({ status: "idle", data: null, lastFetch: 0 }); return }
     if (!key) { set({ status: "idle", data: null, lastFetch: 0 }); return }

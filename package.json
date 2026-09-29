@@ -1,6 +1,6 @@
 {
   "name": "opencode-cache-and-tps",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "OpenCode TUI plugin displaying real-time token cache hit rate, TTFT and TPS in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
@@ -9,6 +9,10 @@
     "./v2": {
       "types": "./dist/v2/index.d.ts",
       "default": "./dist/v2.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
     }
   },
   "files": [
@@ -40,7 +44,8 @@
     "test:bar": "tsx tests/bar-items.test.ts",
     "test:balance-auto": "tsx tests/balance.test.ts",
     "test:commands": "tsx tests/commands-shared.test.ts",
-    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util && npm run test:v2 && npm run test:bar && npm run test:balance-auto && npm run test:commands",
+    "test:credentials": "tsx tests/credentials.test.ts",
+    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util && npm run test:v2 && npm run test:bar && npm run test:balance-auto && npm run test:commands && npm run test:credentials",
     "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\r\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\r\\n')\"",
     "prepublishOnly": "npm run build"
   },

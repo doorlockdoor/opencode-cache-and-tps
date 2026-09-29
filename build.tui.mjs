@@ -34,3 +34,14 @@ await esbuild.build({
   external: ["@opencode-ai/*", "@opencode/plugin/*", "@opentui/*", "solid-js"],
   plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
 })
+
+// V2（opencode 2.x）服务端入口：默认导出带 id + setup，供宿主 PluginModule
+// schema 校验；本插件无服务端行为，setup 为空实现（@opencode-ai/* 仅 type-only）。
+await esbuild.build({
+  entryPoints: ["src/server.ts"],
+  outfile: "dist/server.js",
+  format: "esm",
+  platform: "node",
+  bundle: true,
+  external: ["@opencode-ai/*", "@opencode/plugin/*"],
+})

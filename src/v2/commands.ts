@@ -7,6 +7,7 @@ import type { PanelApi, PanelSignals } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
 import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "../balance-providers"
 import { createT } from "../i18n"
+import { resolveCredentialToken } from "./credentials"
 import {
   applyBarItem, applyStyle, applyCurrency, applyLang,
   applyPerfFilter, applyRate, applySection, applyTpsMode, barItemChoices,
@@ -14,42 +15,26 @@ import {
   type ToastMsg,
 } from "../commands-shared"
 
-declare const process: {
-  env: Record<string, string | undefined>
-  getBuiltinModule?: (id: string) => unknown
-} | undefined
-
-/** v2 余额 key 自动复用（尽力而为）：凭据已迁移进数据库，仅能读遗留 auth.json；未命中提示手动配置。 */
-export function findOpencodeKeyV2(provider: BalanceProvider): string {
+/** V2 版 findOpencodeKey：优先使用 V2 provider list 暴露的 key（宿主提供时），
+ *  否则解析宿主已认证凭据——V2 的 Provider.Info 不含 key 字段，且凭据保存在
+ *  宿主 SQLite（credential 表），auth.json 仅作迁移遗留兜底（见 credentials.ts）。
+ *  导出供 index.tsx 的余额轮询复用。 */
+export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): string {
   try {
-    const loader = typeof process !== "undefined" ? process?.getBuiltinModule : undefined
-    const fs = loader?.("node:fs") as { readFileSync(path: string, encoding: "utf8"): string } | undefined
-    if (!fs) return ""
-    const home = typeof process !== "undefined" ? (process?.env.HOME || process?.env.USERPROFILE || "") : ""
-    const dataHome = typeof process !== "undefined" ? process?.env.XDG_DATA_HOME : undefined
-    const paths = [
-      dataHome ? `${dataHome}/opencode/auth.json` : "",
-      home ? `${home}/.local/share/opencode/auth.json` : "",
-    ]
+    const provs = context.data.location.provider.list() as Array<{ id?: string; key?: string; options?: { apiKey?: string } }>
     const id = provider.id.toLowerCase()
-    for (const path of paths) {
-      if (!path) continue
-      try {
-        const auth = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, any>
-        const hit = Object.keys(auth).find((k) => k.toLowerCase() === id)
-          ?? Object.keys(auth).find((k) => k.toLowerCase().startsWith(id))
-        if (!hit) continue
-        const v = auth[hit]
-        if (!v || typeof v !== "object") continue
-        if (v.type === "api" && typeof v.key === "string") return v.key
-        if (v.type === "wellknown" && typeof v.token === "string") return v.token
-        if (v.type === "oauth" && typeof v.access === "string") return v.access
-      } catch { /* try the next known auth path */ }
+    const hit = provs.find((p) => String(p.id ?? "").toLowerCase() === id)
+      ?? provs.find((p) => String(p.id ?? "").toLowerCase().startsWith(id))
+    if (hit) {
+      const k = typeof hit.key === "string" ? hit.key : ""
+      if (k) return k
+      const optionKey = typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
+      if (optionKey) return optionKey
+      // 用 OpenCode provider 的 integration_id 去查 SQLite（而非 balance provider id）
+      if (hit.id) return resolveCredentialToken(hit.id)
     }
-    return ""
-  } catch {
-    return ""
-  }
+  } catch { /* fall through to stored credentials */ }
+  return resolveCredentialToken(provider.id)
 }
 
 /** 当前会话 ID（v2 Route = { type:"session", sessionID }）。 */
@@ -71,7 +56,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
   /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
   const providerOptionTitle = (p: BalanceProvider, current?: string) => {
     const hasManual = !!api.kv.get<string>(`${KV_PREFIX}.balance.${p.id}.key`, "")
-    const hasAuto = !hasManual && !!findOpencodeKeyV2(p)
+    const hasAuto = !hasManual && !!findOpencodeKeyV2(context, p)
     const mark = hasManual ? t()("keyUser") : hasAuto ? t()("keyOpenCode") : t()("keyNotSet")
     return p.name + mark + (current && p.id === current ? " *" : "")
   }
