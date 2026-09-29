@@ -42,10 +42,23 @@ V2版本，编辑`~/.config/opencode/cli.json`，添加包名。
 }
 ```
 
-V1版本，在 OpenCode 中按 `Ctrl + P` 打开命令面板，搜索 `install plugin`，输入：
+V1版本，编辑`~/.config/opencode/tui.json`，添加包名。
+
+```jsonc
+{
+    "$schema": "https://opencode.ai/tui.json",
+    "plugin": [
+        // ...
+        "opencode-cache-and-tps@latest"
+    ]
+}
 
 ```
-opencode-cache-and-tps@latest
+
+清除 OpenCode 插件缓存：
+
+```powershell
+Remove-Item -Recurse -Force "~\.cache\opencode\packages\opencode-cache-and-tps@latest"
 ```
 
 ## 本地构建

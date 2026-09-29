@@ -25,7 +25,9 @@ Forked from [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-c
 
 ## Installation
 
-For v2, edit `~/.config/opencode/cli.json` and add the package name. Do not use `opencode plugin add`, see the upstream documentation for details.
+For v2, edit `~/.config/opencode/cli.json` and add the package name.
+
+> Do not use `opencode plugin add`; see the upstream documentation for details.
 
 ```jsonc
 {
@@ -40,10 +42,23 @@ For v2, edit `~/.config/opencode/cli.json` and add the package name. Do not use 
 }
 ```
 
-For v1, press `Ctrl + P` in OpenCode to open the command palette, search for `install plugin`, and enter:
+For v1, edit `~/.config/opencode/tui.json` and add the package name.
+
+```jsonc
+{
+    "$schema": "https://opencode.ai/tui.json",
+    "plugin": [
+        // ...
+        "opencode-cache-and-tps@latest"
+    ]
+}
 
 ```
-opencode-cache-and-tps@latest
+
+Clear the OpenCode plugin cache:
+
+```powershell
+Remove-Item -Recurse -Force "~\.cache\opencode\packages\opencode-cache-and-tps@latest"
 ```
 
 ## Local Build
