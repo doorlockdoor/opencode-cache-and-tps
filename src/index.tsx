@@ -24,10 +24,10 @@ import {
 } from "./commands-shared"
 import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 import { num } from "./tokens"
-import { computeLivePerf, lastPerfSample, currentModelKey } from "./perf"
+import { computeLivePerf, lastPerfValues, currentModelKey } from "./perf"
 import { FALLBACK, MAX_SAT, desaturateTo, fmtCost, visualWidth, truncateVisual } from "./ui"
 import { fmtCompact, formatBalanceText } from "./currency"
-import { liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, createBusyTick, type StatSeg } from "./live"
+import { liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, createBusyTick, createPerfRefreshTick, type StatSeg } from "./live"
 import { KV_PREFIX, type BalanceState, type PanelSignals, type DisplayStyle, type TpsMode } from "./panel/panel-api"
 import { TokenCachePanel } from "./panel/TokenCachePanel"
 
@@ -138,6 +138,8 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 
   const sid = props.sessionId
 
+  const perfVersion = createPerfRefreshTick(props.api)
+
   // ── 命中率 + 用量（口径见 src/stats.ts，与侧边栏/V2 底栏同源）──
   const stats = createMemo(() => {
     const id = sid
@@ -145,12 +147,21 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return collectUsageBySession(props.api, id)
   })
 
-  // ── 最近精确样本（首字/速度/延迟三段同源；computePerfSample 唯一采样，过滤开启时跳过非当前模型）──
-  const lastSample = createMemo(() => {
+  // ── 模型过滤键（过滤关闭 / 会话未知 → null=不过滤）：单独成 memo，避免每次 part 事件
+  // 都走 currentModelKey 的回退分支（遍历全部消息）──
+  const modelKey = createMemo(() => {
     const id = sid
-    if (!id) return null
-    const mk = props.signals.perfModelFilter() ? currentModelKey(props.api, id) : null
-    return lastPerfSample(props.api, id, mk)
+    if (!id || !props.signals.perfModelFilter()) return null
+    return currentModelKey(props.api, id)
+  })
+
+  // ── 最近精确值（口径见 perf.ts lastPerfValues）：首字/延迟取最近有效样本，速度独立
+  // 回溯到最近一次有效值；与 V2 底栏、侧边栏同一实现 ──
+  const perfValues = createMemo(() => {
+    const id = sid
+    if (!id) return { sample: null, tps: null }
+    void perfVersion()
+    return lastPerfValues(props.api, id, modelKey())
   })
 
   // ── 会话累计 tokens（tokens 段开启时显示）──
@@ -255,9 +266,9 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     // 性能段固定顺序 首字 → 速度 → 延迟（/cache-bar 开关），与实时块、侧边栏性能区一致；
     // 标签/开关经 pushPerfSegs 与实时块同口径（dsh：首 Token 文案 + 速度/延迟省去）；
     // 流式期间宿主将 hint 行整体替换为忙碌行，与右侧实时值天然互斥，不存在同屏双值
-    const sample = lastSample()
+    const { sample, tps } = perfValues()
     pushPerfSegs(segs, sep, {
-      style: props.signals.style(), t, sample, tps: sample?.tps ?? null, muted: pal().muted, text: pal().text,
+      style: props.signals.style(), t, sample, tps, muted: pal().muted, text: pal().text,
       ttft: props.signals.barShowTtft(), speed: props.signals.barShowSpeed(), lat: props.signals.barShowLat(),
     })
     if (props.signals.barShowBalance() && !props.signals.balanceUnsupported()) {

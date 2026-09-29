@@ -14,11 +14,10 @@ import { collectUsage } from "../stats"
 import { shallowEqual, createThrottledBumper } from "../util"
 import { FALLBACK, MAX_SAT, desaturateTo, dimColor, fmt, fmtCost, fmtMs, progressBar, truncateVisual, visualWidth, visualPadEnd } from "../ui"
 import { formatBalanceText } from "../currency"
+import { PART_THROTTLE_MS } from "../live"
 import { KV_PREFIX, type PanelApi, type PanelSignals } from "./panel-api"
 
 const MIN_PANEL_WIDTH = 20
-// part 事件 → data 重算的节流间隔（前沿+尾沿）：重算上限 10Hz，延迟 ≤100ms
-const PART_THROTTLE_MS = 100
 const DEFAULT_PANEL_WIDTH = 26
 
 /** ── layout measurement constants (visual columns) ── */

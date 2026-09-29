@@ -1,9 +1,10 @@
 // ── live (streaming) perf helpers ──
 // 流式心跳、样式注册表与实时分段；V1 壳（输入框行）与 V2 底栏共用，避免口径漂移。
-import { createSignal, createEffect, onCleanup } from "solid-js"
+import { createSignal, createEffect, onMount, onCleanup } from "solid-js"
 import type { AssistantMessage } from "@opencode-ai/sdk"
 import { createT, type Translation } from "./i18n"
 import { fmtSec } from "./ui"
+import { createThrottledBumper } from "./util"
 import type { LivePerf, PerfSample } from "./perf"
 import { KV_PREFIX, type PanelApi, type PanelSignals, type DisplayStyle, type TpsMode } from "./panel/panel-api"
 
@@ -40,6 +41,22 @@ export function createBusyTick(api: PanelApi, sid: () => string, enabled?: () =>
 
 export type StatSeg = { text: string; color: string | undefined }
 export type Translate = ReturnType<typeof createT>
+/** part/message 事件触发的重算间隔；V1/V2 底栏与侧边栏共用。 */
+export const PART_THROTTLE_MS = 100
+
+/** 订阅精确值更新事件，返回供 memo 读取的节流版本号。 */
+export function createPerfRefreshTick(api: PanelApi): () => number {
+  const [tick, setTick] = createSignal(0)
+  onMount(() => {
+    const bumper = createThrottledBumper(() => setTick((v) => v + 1), PART_THROTTLE_MS)
+    const unsubPart = api.event.on("message.part.updated", bumper.bump)
+    const unsubMsg = api.event.on("message.updated", bumper.bump)
+    const unsubSession = api.event.on("session.updated", bumper.bump)
+    bumper.bump()
+    onCleanup(() => { bumper.dispose(); unsubPart(); unsubMsg(); unsubSession() })
+  })
+  return tick
+}
 /** 显示样式注册表（/cache-style；菜单与 KV 校验自动跟随，渲染分支与 i18n 文案手动补）。 */
 export const STYLES = [
   { id: "default", labelKey: "styleDefault" },
@@ -172,11 +189,7 @@ export function liveStatSegs(
   return segs
 }
 
-/**
- * 精确性能段（首字/速度/延迟）按固定顺序追加到 out：受各段开关控制、标签经 perfLabel
- * 与实时块同口径。段间分隔由调用方 sep 负责（仅 out 非空时插入）。tps 由调用方给出
- * （V2 体感回合口径或最近样本），sample 为最近精确样本（速度取 null 时该段隐藏，首字/延迟照常）。
- */
+/** 按首字、速度、延迟顺序追加；sample 与 tps 独立，缺值时只隐藏对应段。 */
 export function pushPerfSegs(
   out: StatSeg[],
   sep: () => void,

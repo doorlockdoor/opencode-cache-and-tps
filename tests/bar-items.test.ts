@@ -123,6 +123,8 @@ import { KV_PREFIX } from "../src/panel/panel-api"
   assert.equal(run({ ttft: false, lat: false }), "barTPS 12.5 tokS")
   // 速度取 null → 隐藏，首字/延迟照常
   assert.equal(run({ tps: null }), "barTTFT 0.50s \u00b7 barLat 2.50s")
+  // 最新 step 只有首字/延迟，速度取会话中最近一次有效 TPS 时仍应显示
+  assert.equal(run({ sample: { ...sample, tps: null }, tps: 223.7 }), "barTTFT 0.50s \u00b7 barTPS 223.7 tokS \u00b7 barLat 2.50s")
   // 样本为 null → 首字/延迟隐藏（速度仍可显）
   assert.equal(run({ sample: null }), "barTPS 12.5 tokS")
   // dsh：首字「首 Token」、速度/延迟省标签；min：全省标签

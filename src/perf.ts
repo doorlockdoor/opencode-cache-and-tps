@@ -25,16 +25,17 @@ import { ASCII_PER_TOKEN, estimateTokens, num } from "./tokens"
 //   tool：参数流式期（tool-input-*）仅建 pending 无 time，tool-call 才置
 //   running 并打 start，tool-result 补 end → 参数生成期不可观测，
 //   留在分母（已知残余低估），与分子（参数已全量计入）方向相反相互弱化。
-//   采样逻辑单一实现（computePerfSample），侧边栏累计与底栏最近样本
-//   （lastPerfSample）共用，杜绝双源漂移。V1 时间戳持久化在数据库、直接读取推导；V2 text
+//   采样逻辑单一实现（computePerfSample），侧边栏累计与两壳底栏最近值
+//   （lastPerfValues）共用，杜绝双源漂移。V1 时间戳持久化在数据库、直接读取推导；V2 text
 //   首字时刻由内容开始事件捕获注入，历史数据缺失 → 该步不计入样本
 //   （见 v2/panel-api.ts）。
 
-/** 小步噪声守卫：生成窗口低于此值时时间戳噪声占比过大，TPS 不可信 → 记 null。 */
-export const MIN_GEN_MS = 500
-/** 缓冲网关守卫：每 token 耗时低于此值（非流式瞬间吐出）时 TPS 不可信 → 记 null。 */
-export const BUFFER_MS_PER_TOKEN = 0.2
-/** 实时估算守卫：生成窗口过短或产出 token 过少时波动过大 → 速度回落本回合最近实时值（无历史则留空）。 */
+/** 过滤时间戳噪声较大的短生成窗口；校准见 benchmarks/tps-display-probe.mts。 */
+export const MIN_GEN_MS = 300
+/** 过滤缓冲网关瞬间吐出的异常速度；校准见 benchmarks/tps-display-probe.mts。 */
+export const BUFFER_MS_PER_TOKEN = 1.0
+/** 实时估算守卫：生成窗口过短或产出 token 过少时波动过大 → 速度回落本回合最近实时值（无历史则留空）。
+ *  刻意与精确侧 MIN_GEN_MS 解耦：实时分子是估算值（±1 成误差），需要更长窗口才稳定，不随之下调。 */
 export const LIVE_MIN_GEN_MS = 500
 /** 实时估算守卫：流式产出 token 数下限。 */
 export const LIVE_MIN_TOK = 8
@@ -81,6 +82,16 @@ export interface PerfSample {
   latency: number
 }
 
+/** 阈值扫描复用采样时的真实分子与净生成窗口。 */
+export interface PerfGateInputs {
+  genTok: number
+  genMs: number
+}
+
+export function passesTpsGate(genTok: number, genMs: number, minGenMs = MIN_GEN_MS, minMsPerToken = BUFFER_MS_PER_TOKEN): boolean {
+  return genTok > 0 && genMs >= Math.max(minGenMs, genTok * minMsPerToken)
+}
+
 /**
  * 工具参数原文：优先 state.raw（模型生成的原始参数文本），回退 state.input 序列化。
  * 序列化抛错（循环引用等）按空串处理。
@@ -121,12 +132,13 @@ function bufferedParamTok(
 // ── per-message perf sample ──
 /**
  * 单条 assistant 消息的性能样本（精确口径唯一实现）：侧边栏「性能」累计与
- * 底栏最近样本（lastPerfSample）共用。条件：已完成、无错误、非压缩、产出
+ * 两壳底栏最近值（lastPerfValues）共用。条件：已完成、无错误、非压缩、产出
  * token>0、有内容 part 且首 part 晚于创建；返回 null 表示不计入样本。
  */
 export function computePerfSample(
   am: AssistantMessage,
   parts: readonly Part[],
+  gateInputs?: PerfGateInputs,
 ): PerfSample | null {
   const created = am.time?.created
   const completed = am.time?.completed
@@ -183,8 +195,9 @@ export function computePerfSample(
   const ttft = fs - created
   const genMs = Math.max(0, completed - fs - toolMs)
   const latency = Math.max(0, completed - created - toolMs)
+  if (gateInputs) { gateInputs.genTok = genTok; gateInputs.genMs = genMs }
   // 守卫（小步噪声 / 缓冲网关）触发：TPS 记 null，ttft/latency 照常
-  const tps = genTok > 0 && genMs >= Math.max(MIN_GEN_MS, genTok * BUFFER_MS_PER_TOKEN) ? (genTok / genMs) * 1000 : null
+  const tps = passesTpsGate(genTok, genMs) ? (genTok / genMs) * 1000 : null
   return { ttft, tps, latency }
 }
 
@@ -295,14 +308,11 @@ export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: Pe
   }
 }
 
-/**
- * 最近一次有效样本（filterKey 模型过滤口径同 aggregatePerf）。取第一条
- * computePerfSample 非空的消息——首字/延迟/输出速度同源同一条 step（避免混搭不同
- * step 的值）；该 step 的 tps 若被守卫记 null 则速度段隐藏，首字/延迟照常显示。
- * 体感模式下底栏速度改用 hostTurnTps，本样本仍为 首字/延迟 及速度的回落来源。
- */
-export function lastPerfSample(api: PanelApi, sid: string, filterKey?: string | null): PerfSample | null {
+/** 最近有效样本提供首字/延迟；速度独立回溯，口径同 aggregatePerf.tpsLast。 */
+export function lastPerfValues(api: PanelApi, sid: string, filterKey?: string | null): { sample: PerfSample | null; tps: number | null } {
   const msgs = api.state.session.messages(sid) as Message[]
+  let sample: PerfSample | null = null
+  let tps: number | null = null
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.role !== "assistant") continue
@@ -310,10 +320,13 @@ export function lastPerfSample(api: PanelApi, sid: string, filterKey?: string | 
     if (filterKey && modelKeyOf(am) !== filterKey) continue
     let parts: readonly Part[] = []
     try { parts = api.state.part(am.id) } catch {}
-    const s = computePerfSample(am, parts)
-    if (s) return s
+    const current = computePerfSample(am, parts)
+    if (!current) continue
+    sample ??= current
+    if (current.tps !== null) tps = current.tps
+    if (sample && tps !== null) break
   }
-  return null
+  return { sample, tps }
 }
 
 // ── host-style turn TPS (v2 only) ──
@@ -321,8 +334,9 @@ export function lastPerfSample(api: PanelApi, sid: string, filterKey?: string | 
  * 回合切分：user/synthetic/idle 为回合边界（对齐宿主 inputIndex），其余非
  * assistant 标记（system/skill/shell/切换标记…）跳过而不截断——宿主在回合中途
  * 遇到这些消息仍连续聚合，若在此断开会丢步、与 footer 口径不一致。
+ * 回合边界唯一实现：hostTurnTps 与显示口径回放探针（benchmarks/tps-display-probe.mts）共用。
  */
-function splitTurns(msgs: readonly Message[]): AssistantMessage[][] {
+export function splitTurns(msgs: readonly Message[]): AssistantMessage[][] {
   const turns: AssistantMessage[][] = []
   let cur: AssistantMessage[] | null = null
   for (const m of msgs) {

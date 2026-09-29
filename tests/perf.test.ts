@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { estimateTokens, num } from "../src/tokens"
-import { computePerfSample, computeLivePerf, aggregatePerf, aggregateHostTps, modelKeyOf, currentModelKey, hostTurnTps } from "../src/perf"
+import { computePerfSample, computeLivePerf, aggregatePerf, aggregateHostTps, modelKeyOf, currentModelKey, hostTurnTps, lastPerfValues, passesTpsGate, type PerfGateInputs } from "../src/perf"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
@@ -101,11 +101,16 @@ assert.ok(Math.abs(hiddenReasoningParam.tps! - 75 / 0.5) < 1e-9) // 工具窗口
 
 // 整包参数守卫：文本 290 chars → 100 tok / 2s = 50 tok/s；参数 1850 chars → 500 tok
 // 在 gap 100ms 内整块到达 → 隐含 5000 tok/s ≥ 5×50 → 命中：分子 = 600−500 = 100
+const bufferedGate: PerfGateInputs = { genTok: 0, genMs: 0 }
 const bufferedStep = computePerfSample(
   am({ time: { created: 1000, completed: 5000 }, tokens: { input: 10, output: 600, reasoning: 0, cache: { read: 0, write: 0 } } }),
   [textPart(1500, "a".repeat(290), 3500), toolPart(3600, 4000, "a".repeat(1850))],
+  bufferedGate,
 )!
 assert.ok(Math.abs(bufferedStep.tps! - 100 / 3.1) < 1e-9) // genMs = 5000−1500−400
+assert.deepEqual(bufferedGate, { genTok: 100, genMs: 3100 })
+assert.equal(passesTpsGate(bufferedGate.genTok, bufferedGate.genMs), bufferedStep.tps !== null)
+assert.equal(passesTpsGate(bufferedGate.genTok, bufferedGate.genMs, 300, 40), false)
 
 // 对照：同样参数量但 gap 900ms（真实流式）→ 保持全量口径 600/3.1
 const streamedStep = computePerfSample(
@@ -177,7 +182,7 @@ assert.equal(computePerfSample(am({ tokens: { input: 10, output: 0, reasoning: 0
 assert.equal(computePerfSample(am(), [toolPart(2000, 3000)]), null) // 无内容 part
 assert.equal(computePerfSample(am(), [textPart(1000)]), null) // firstStart <= created
 
-// 小步噪声守卫（genMs <500ms）：旧口径此类步虚高至 1500+，现 TPS 记 null（ttft/latency 保留）
+// 小步噪声守卫（genMs < MIN_GEN_MS）：旧口径此类步虚高至 1500+，现 TPS 记 null（ttft/latency 保留）
 const tinyStep = computePerfSample(
   am({ time: { created: 1000, completed: 1223 } }),
   [textPart(1100), toolPart(1150, 1200)],
@@ -217,22 +222,22 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
   assert.equal(perf.hasPerf, true)
 }
 
-// 三条样本 → 中位数 ≠ 均值（200/400/1800 → 中位 400，均值 800）
+// 三条样本 → 中位数 ≠ 均值（60/120/300 → 中位 120，均值 180）
 {
   const msgs = [
-    am({ id: "a", time: { created: 1000, completed: 1600 }, tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "b", time: { created: 2000, completed: 2600 }, tokens: { input: 1, output: 200, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 900, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    am({ id: "a", time: { created: 1000, completed: 1600 }, tokens: { input: 1, output: 30, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    am({ id: "b", time: { created: 2000, completed: 2600 }, tokens: { input: 1, output: 60, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
   ]
   const api = makeApi({
     messages: () => [],
     parts: (mid) => [textPart(mid === "a" ? 1100 : mid === "b" ? 2100 : 3100)],
   })
   const perf = aggregatePerf(api, msgs as unknown as Message[])
-  // 各步生成窗口均 500ms（≥MIN_GEN_MS）→ a:200 / b:400 / c:1800 tok/s
+  // 各步生成窗口均 500ms（≥MIN_GEN_MS 且 ≥ 分子×1ms）→ a:60 / b:120 / c:300 tok/s
   assert.equal(perf.tpsN, 3)
-  assert.equal(perf.tpsMed, 400) // 中位数
-  assert.ok(Math.abs(perf.tpsLast! - 1800) < 1e-9)
+  assert.equal(perf.tpsMed, 120) // 中位数 ≠ 均值 180
+  assert.ok(Math.abs(perf.tpsLast! - 300) < 1e-9)
   assert.equal(perf.ttftMed, 100) // 三条 ttft 均 100
 }
 
@@ -293,18 +298,18 @@ assert.ok(modelKeyOf(am({ providerID: "" })) === null)
   const msgs = [
     am({ id: "a", time: { created: 1000, completed: 1600 }, tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }),
     am({ id: "b", time: { created: 2000, completed: 2600 }, tokens: { input: 1, output: 200, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 900, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" }),
+    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 250, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" }),
     am({ id: "d", time: { created: 4000, completed: 4600 }, tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" }),
   ]
   const api = makeApi({
     messages: () => [],
     parts: (mid) => [textPart(mid === "a" ? 1100 : mid === "b" ? 2100 : mid === "c" ? 3100 : 4100)],
   })
-  // 不过滤：全域统计 [200, 400, 1800, 200] → 中位 (200+400)/2 = 300
+  // 不过滤：全域统计 [200, 400, 500, 200] → 中位 (200+400)/2 = 300
   const all = aggregatePerf(api, msgs as unknown as Message[])
   assert.equal(all.tpsN, 4)
   assert.equal(all.tpsLast, 200)
-  assert.equal(all.tpsMed, 300) // [200, 200, 400, 1800] 中位 = (200+400)/2
+  assert.equal(all.tpsMed, 300) // [200, 200, 400, 500] 中位 = (200+400)/2
   // 过滤到 p/model（a/b 两条）：只取目标模型
   const filtered = aggregatePerf(api, msgs as unknown as Message[], { modelKey: "prov/model" })
   assert.equal(filtered.ttftN, 2)
@@ -315,7 +320,7 @@ assert.ok(modelKeyOf(am({ providerID: "" })) === null)
   const fast = aggregatePerf(api, msgs as unknown as Message[], { modelKey: "p/fast" })
   assert.equal(fast.tpsN, 2)
   assert.equal(fast.tpsLast, 200)
-  assert.equal(fast.tpsMed, 1000) // [200, 1800] → (200+1800)/2 = 1000
+  assert.equal(fast.tpsMed, 350) // [200, 500] → (200+500)/2 = 350
   // 目标模型无样本 → 空统计（hasPerf false）
   const none = aggregatePerf(api, msgs as unknown as Message[], { modelKey: "p/nope" })
   assert.equal(none.hasPerf, false)
@@ -343,6 +348,32 @@ function makeApi(opts: ApiOpts): TuiPluginApi {
       part: opts.parts,
     },
   } as unknown as TuiPluginApi
+}
+
+// V1 底栏：最新样本仍提供首字/延迟；速度跳过该步的 null，取侧边栏同一个 tpsLast。
+{
+  const latest = am({ id: "new", time: { created: 4000, completed: 4250 }, tokens: { input: 1, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const earlier = am({ id: "old", tokens: { input: 1, output: 300, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const api = makeApi({
+    messages: () => [earlier, latest] as Message[],
+    parts: (mid) => mid === "new" ? [textPart(4100)] : [textPart(1500)],
+  })
+  const values = lastPerfValues(api, "s1")
+  assert.equal(values.sample?.ttft, 100)
+  assert.equal(values.sample?.tps, null)
+  assert.equal(values.tps, 200)
+  // 三处（V1 底栏 / V2 底栏 / 侧边栏）同源不变量：首字/延迟 = 聚合的最近样本，
+  // 速度 = 聚合的最近有效速度，即便它们不是同一步
+  const agg = aggregatePerf(api, [earlier, latest] as Message[])
+  assert.equal(values.sample?.ttft, agg.ttftLast)
+  assert.equal(values.sample?.latency, agg.latLast)
+  assert.equal(values.tps, agg.tpsLast)
+  assert.deepEqual(lastPerfValues(api, "s1", "prov/other"), { sample: null, tps: null })
+  assert.equal(lastPerfValues(api, "s1", "prov/model").tps, 200)
+  const otherModel = am({ ...latest, modelID: "other" })
+  const mixed = makeApi({ messages: () => [earlier, otherModel] as Message[], parts: (mid) => mid === "new" ? [textPart(4100)] : [textPart(1500)] })
+  assert.equal(lastPerfValues(mixed, "s1", "prov/other").tps, null)
+  assert.equal(lastPerfValues(mixed, "s1", "prov/model").tps, 200)
 }
 
 function liveAm(overrides: Record<string, unknown> = {}): AssistantMessage {
