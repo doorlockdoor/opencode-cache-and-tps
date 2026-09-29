@@ -55,11 +55,7 @@ For v1, edit `~/.config/opencode/tui.json` and add the package name.
 
 ```
 
-Clear the OpenCode plugin cache:
-
-```powershell
-Remove-Item -Recurse -Force "~\.cache\opencode\packages\opencode-cache-and-tps@latest"
-```
+Troubleshooting: if the plugin doesn't take effect, clear the plugin cache and restart. On v2 the cache is at `~/.cache/opencode/npm`; on v1 it is at `~/.cache/opencode/packages`.
 
 ## Local Build
 

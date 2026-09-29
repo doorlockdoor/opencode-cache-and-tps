@@ -55,11 +55,7 @@ V1版本，编辑`~/.config/opencode/tui.json`，添加包名。
 
 ```
 
-清除 OpenCode 插件缓存：
-
-```powershell
-Remove-Item -Recurse -Force "~\.cache\opencode\packages\opencode-cache-and-tps@latest"
-```
+排障：若插件未生效，可清理插件缓存后重启。V2 缓存在 `~/.cache/opencode/npm`，V1 在 `~/.cache/opencode/packages`。
 
 ## 本地构建
 
