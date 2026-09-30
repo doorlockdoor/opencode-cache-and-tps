@@ -55,7 +55,7 @@ V1版本，编辑`~/.config/opencode/tui.json`，添加包名。
 
 ```
 
-排障：若插件未生效，可清理插件缓存后重启。V2 缓存在 `~/.cache/opencode/npm`，V1 在 `~/.cache/opencode/packages`。
+排障：若插件冲突或故障，可清理缓存并以纯净状态重启opencode，然后依次排查。V2缓存在`~/.cache/opencode/npm`，V1在`~/.cache/opencode/packages`。
 
 ## 本地构建
 
