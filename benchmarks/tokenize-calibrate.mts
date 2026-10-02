@@ -32,81 +32,115 @@ import path from "node:path"
 import fs from "node:fs"
 import { estimateTokens, num } from "../src/tokens"
 
-const dbFile = process.env.OPCODE_CALIBRATE_DB || path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
+const dbFile =
+  process.env.OPCODE_CALIBRATE_DB ||
+  path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
 if (!fs.existsSync(dbFile)) {
-  console.log(`未找到 opencode 数据库 (${dbFile})；可用环境变量 OPCODE_CALIBRATE_DB 指向其他路径后重跑。`)
+  console.log(
+    `未找到 opencode 数据库 (${dbFile})；可用环境变量 OPCODE_CALIBRATE_DB 指向其他路径后重跑。`,
+  )
   process.exit(0)
 }
-const db = new DatabaseSync(dbFile)
+const db = new DatabaseSync(dbFile, { readOnly: true })
+try {
+  const sessions = db
+    .prepare("SELECT id FROM session ORDER BY time_updated DESC LIMIT 200")
+    .all() as { id: string }[]
+  if (!sessions.length) {
+    console.log("最近会话为空，无样本可校准。")
+    process.exit(0)
+  }
+  const ph = sessions.map(() => "?").join(",")
+  const msgs = db
+    .prepare(
+      `SELECT id, time_created, data FROM message WHERE session_id IN (${ph}) AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC`,
+    )
+    .all(...sessions.map((s) => s.id)) as { id: string; time_created: number; data: string }[]
 
-const sessions = db.prepare("SELECT id FROM session ORDER BY time_updated DESC LIMIT 200").all() as { id: string }[]
-if (!sessions.length) {
-  console.log("最近会话为空，无样本可校准。")
-  process.exit(0)
+  let minT = Infinity,
+    maxT = 0
+  const groups = new Map<
+    string,
+    { reas: { text: string; actual: number }[]; ans: { text: string; actual: number }[] }
+  >()
+  const groupOf = (key: string) => {
+    let g = groups.get(key)
+    if (!g) {
+      g = { reas: [], ans: [] }
+      groups.set(key, g)
+    }
+    return g
+  }
+
+  const partStmt = db.prepare("SELECT data FROM part WHERE message_id = ?")
+
+  for (const row of msgs) {
+    const d = JSON.parse(row.data)
+    const key = [d.providerID ?? "?", d.modelID ?? "?"].join(" | ")
+    const tok = d.tokens ?? {}
+    const reasActual = num(tok.reasoning)
+    const outActual = num(tok.output)
+    if (reasActual <= 0 && outActual <= 0) continue
+    const parts = partStmt.all(row.id) as { data: string }[]
+    let reasText = "",
+      outText = "",
+      hasTool = false,
+      compShort = false
+    for (const p of parts) {
+      const pd = JSON.parse(p.data)
+      if (pd.type === "reasoning") reasText += pd.text ?? ""
+      else if (pd.type === "text") {
+        if (pd.compacted) compShort = true
+        outText += pd.text ?? ""
+      } else if (pd.type === "tool") hasTool = true
+    }
+    if (row.time_created) {
+      const t = new Date(row.time_created).getTime()
+      if (t < minT) minT = t
+      if (t > maxT) maxT = t
+    }
+    const g = groupOf(key)
+    // 思考段：纯推理消息（思考占比 >5×输出），避免与输出混算
+    if (reasText && reasActual >= 200 && reasActual / Math.max(outActual, 1) > 5) {
+      g.reas.push({ text: reasText, actual: reasActual })
+    }
+    // 答案段：无工具调用的纯答案消息（text part 与 tokens.output 一一对应）
+    if (outText && outActual >= 30 && !hasTool && !compShort) {
+      g.ans.push({ text: outText, actual: outActual })
+    }
+  }
+
+  const fmtRange = () => {
+    if (minT === Infinity) return "n/a"
+    const a = new Date(minT).toLocaleDateString("zh-CN"),
+      b = new Date(maxT).toLocaleDateString("zh-CN")
+    return a === b ? a : `${a} ~ ${b}`
+  }
+
+  console.log(`opencode 样本库: ${sessions.length} 会话, 数据范围 ${fmtRange()}`)
+  for (const [key, g] of [...groups.entries()]
+    .sort((a, b) => a[1].reas.length + a[1].ans.length - (b[1].reas.length + b[1].ans.length))
+    .reverse()) {
+    console.log(`\n${key}:`)
+    if (g.reas.length) {
+      const est = g.reas.reduce((s, r) => s + estimateTokens(r.text, "thinking"), 0)
+      const act = g.reas.reduce((s, r) => s + r.actual, 0)
+      console.log(
+        `  思考段 n=${g.reas.length}: est/actual = ${(est / act).toFixed(3)}   ${est.toLocaleString()} / ${act.toLocaleString()}`,
+      )
+    }
+    if (g.ans.length) {
+      const est = g.ans.reduce((s, r) => s + estimateTokens(r.text, "answer"), 0)
+      const act = g.ans.reduce((s, r) => s + r.actual, 0)
+      console.log(
+        `  答案段 n=${g.ans.length}: est/actual = ${(est / act).toFixed(3)}   ${est.toLocaleString()} / ${act.toLocaleString()}`,
+      )
+    }
+    if (!g.reas.length && !g.ans.length) console.log("  (无合格样本)")
+  }
+  console.log(
+    "\n判读：est/actual 应落在 0.90 ~ 1.10；若某档逼近或越过边界，说明密度参数需要重新校准（见文件头注释）",
+  )
+} finally {
+  db.close()
 }
-const ph = sessions.map(() => "?").join(",")
-const msgs = db.prepare(`SELECT id, time_created, data FROM message WHERE session_id IN (${ph}) AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC`).all(...sessions.map(s => s.id)) as { id: string; time_created: number; data: string }[]
-
-let minT = Infinity, maxT = 0
-const groups = new Map<string, { reas: { text: string; actual: number }[]; ans: { text: string; actual: number }[] }>()
-const groupOf = (key: string) => {
-  let g = groups.get(key)
-  if (!g) { g = { reas: [], ans: [] }; groups.set(key, g) }
-  return g
-}
-
-const partStmt = db.prepare("SELECT data FROM part WHERE message_id = ?")
-
-for (const row of msgs) {
-  const d = JSON.parse(row.data)
-  const key = [d.providerID ?? "?", d.modelID ?? "?"].join(" | ")
-  const tok = d.tokens ?? {}
-  const reasActual = num(tok.reasoning)
-  const outActual = num(tok.output)
-  if (reasActual <= 0 && outActual <= 0) continue
-  const parts = partStmt.all(row.id) as { data: string }[]
-  let reasText = "", outText = "", hasTool = false, compShort = false
-  for (const p of parts) {
-    const pd = JSON.parse(p.data)
-    if (pd.type === "reasoning") reasText += pd.text ?? ""
-    else if (pd.type === "text") { if (pd.compacted) compShort = true; outText += pd.text ?? "" }
-    else if (pd.type === "tool") hasTool = true
-  }
-  if (row.time_created) {
-    const t = new Date(row.time_created).getTime()
-    if (t < minT) minT = t
-    if (t > maxT) maxT = t
-  }
-  const g = groupOf(key)
-  // 思考段：纯推理消息（思考占比 >5×输出），避免与输出混算
-  if (reasText && reasActual >= 200 && reasActual / Math.max(outActual, 1) > 5) {
-    g.reas.push({ text: reasText, actual: reasActual })
-  }
-  // 答案段：无工具调用的纯答案消息（text part 与 tokens.output 一一对应）
-  if (outText && outActual >= 30 && !hasTool && !compShort) {
-    g.ans.push({ text: outText, actual: outActual })
-  }
-}
-
-const fmtRange = () => {
-  if (minT === Infinity) return "n/a"
-  const a = new Date(minT).toLocaleDateString("zh-CN"), b = new Date(maxT).toLocaleDateString("zh-CN")
-  return a === b ? a : `${a} ~ ${b}`
-}
-
-console.log(`opencode 样本库: ${sessions.length} 会话, 数据范围 ${fmtRange()}`)
-for (const [key, g] of [...groups.entries()].sort((a, b) => (a[1].reas.length + a[1].ans.length) - (b[1].reas.length + b[1].ans.length)).reverse()) {
-  console.log(`\n${key}:`)
-  if (g.reas.length) {
-    const est = g.reas.reduce((s, r) => s + estimateTokens(r.text, "thinking"), 0)
-    const act = g.reas.reduce((s, r) => s + r.actual, 0)
-    console.log(`  思考段 n=${g.reas.length}: est/actual = ${(est / act).toFixed(3)}   ${est.toLocaleString()} / ${act.toLocaleString()}`)
-  }
-  if (g.ans.length) {
-    const est = g.ans.reduce((s, r) => s + estimateTokens(r.text, "answer"), 0)
-    const act = g.ans.reduce((s, r) => s + r.actual, 0)
-    console.log(`  答案段 n=${g.ans.length}: est/actual = ${(est / act).toFixed(3)}   ${est.toLocaleString()} / ${act.toLocaleString()}`)
-  }
-  if (!g.reas.length && !g.ans.length) console.log("  (无合格样本)")
-}
-console.log("\n判读：est/actual 应落在 0.90 ~ 1.10；若某档逼近或越过边界，说明密度参数需要重新校准（见文件头注释）")

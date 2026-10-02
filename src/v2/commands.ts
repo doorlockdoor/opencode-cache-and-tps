@@ -1,3 +1,4 @@
+import { childSessionChoices } from "../child-sessions"
 /**
  * v2 斜杠命令：此处只构建命令数组，由 app 插槽的 RuntimeRoot 经 keymap.layer 注册
  * （layer 须在组件渲染上下文调用）。
@@ -5,14 +6,32 @@
 import type { Context, KeymapCommand } from "./types"
 import type { PanelApi, PanelSignals } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
-import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "../balance-providers"
+import {
+  balanceProviders,
+  getBalanceProvider,
+  maskKey,
+  type BalanceProvider,
+} from "../balance-providers"
 import { createT } from "../i18n"
 import { resolveCredentialToken } from "./credentials"
 import {
-  applyBarItem, applyStyle, applyCurrency, applyLang,
-  applyPerfFilter, applyRate, applySection, applyTpsMode, barItemChoices,
-  configToast, currencyChoices, langChoices, sectionChoices, styleChoices, tpsModeChoices,
+  applyBarItem,
+  applyStyle,
+  applyCurrency,
+  applyLang,
+  applyPerfFilter,
+  applyRate,
+  applySection,
+  applyTpsMode,
+  barItemChoices,
+  configToast,
+  currencyChoices,
+  langChoices,
+  sectionChoices,
+  styleChoices,
+  tpsModeChoices,
   type ToastMsg,
+  notifySetting,
 } from "../commands-shared"
 
 /** V2 版 findOpencodeKey：优先使用 V2 provider list 暴露的 key（宿主提供时），
@@ -21,10 +40,19 @@ import {
  *  导出供 index.tsx 的余额轮询复用。 */
 export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): string {
   try {
-    const provs = context.data.location.provider.list() as Array<{ id?: string; key?: string; options?: { apiKey?: string } }>
+    const provs = context.data.location.provider.list() as Array<{
+      id?: string
+      key?: string
+      options?: { apiKey?: string }
+    }>
     const id = provider.id.toLowerCase()
-    const hit = provs.find((p) => String(p.id ?? "").toLowerCase() === id)
-      ?? provs.find((p) => String(p.id ?? "").toLowerCase().startsWith(id))
+    const hit =
+      provs.find((p) => String(p.id ?? "").toLowerCase() === id) ??
+      provs.find((p) =>
+        String(p.id ?? "")
+          .toLowerCase()
+          .startsWith(id),
+      )
     if (hit) {
       const k = typeof hit.key === "string" ? hit.key : ""
       if (k) return k
@@ -33,7 +61,9 @@ export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): 
       // 用 OpenCode provider 的 integration_id 去查 SQLite（而非 balance provider id）
       if (hit.id) return resolveCredentialToken(hit.id)
     }
-  } catch { /* fall through to stored credentials */ }
+  } catch {
+    /* 回退到已保存的凭据 */
+  }
   return resolveCredentialToken(provider.id)
 }
 
@@ -46,12 +76,16 @@ export function currentSessionID(context: Context): string {
   return ""
 }
 
-export function makeCommands(context: Context, api: PanelApi, signals: PanelSignals): KeymapCommand[] {
+export function makeCommands(
+  context: Context,
+  api: PanelApi,
+  signals: PanelSignals,
+): KeymapCommand[] {
   const t = () => createT(() => signals.langCode())
 
   /** 宿主 toast 适配（commands-shared 返回宿主无关的 ToastMsg）。 */
-  const show = (msg: ToastMsg) =>
-    context.ui.toast.show({ title: msg.title, message: msg.message, duration: msg.duration })
+  const show = (msg: ToastMsg | null | Promise<ToastMsg | null>) =>
+    notifySetting(msg, (value) => context.ui.toast.show(value), signals)
 
   /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
   const providerOptionTitle = (p: BalanceProvider, current?: string) => {
@@ -78,7 +112,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     context.ui.toast.show({ message: key ? t()("keySaved") : t()("keyCleared") })
   }
 
-  return [
+  const commands: KeymapCommand[] = [
     // ── /cache-currency ──
     {
       id: "opencode-cache-and-tps.cache.currency",
@@ -88,9 +122,12 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       palette: true,
       slash: { name: "cache-currency" },
       run: async () => {
-        const opt = await context.ui.dialog.select({ title: "Select Currency", options: currencyChoices() })
+        const opt = await context.ui.dialog.select({
+          title: "Select Currency",
+          options: currencyChoices(),
+        })
         if (!opt) return
-        show(applyCurrency(api, signals, opt))
+        await show(applyCurrency(api, signals, opt))
       },
     },
     // ── /cache-rate ──
@@ -106,11 +143,11 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
           title: "Exchange Rate",
           description: "Enter the exchange rate from USD to your currency (e.g. 7.2 for CNY)",
           placeholder: "1.0",
-          value: String(api.kv.get<number>(`${KV_PREFIX}.rate`, 1)),
+          value: String(signals.exchangeRate()),
         })
         if (val === undefined) return
         const msg = applyRate(api, signals, val)
-        if (msg) show(msg)
+        await show(msg)
       },
     },
     // ── /cache-perf-filter ──
@@ -132,38 +169,49 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       palette: true,
       slash: { name: "cache-style" },
       run: async () => {
-        const cur = api.kv.get<string>(`${KV_PREFIX}.style`) ?? "default"
-        const opt = await context.ui.dialog.select({ title: t()("styleTitle"), options: styleChoices(signals, cur) })
+        const cur = signals.style()
+        const opt = await context.ui.dialog.select({
+          title: t()("styleTitle"),
+          options: styleChoices(signals, cur),
+        })
         if (!opt) return
-        show(applyStyle(api, signals, opt))
+        await show(applyStyle(api, signals, opt))
       },
     },
     // ── /cache-bar ──
     {
       id: "opencode-cache-and-tps.cache.bar",
       title: "Cache: Toggle Status Bar Items",
-      description: "Show or hide info segments (hit / tokens / balance / ttft / speed / latency / tool; live while streaming, exact when idle)",
+      description:
+        "Show or hide info segments (hit / tokens / balance / ttft / speed / latency / tool; live while streaming, exact when idle)",
       group: "Cache",
       palette: true,
       slash: { name: "cache-bar" },
       run: async () => {
-        const opt = await context.ui.dialog.select({ title: t()("barItemsTitle"), options: barItemChoices(api, signals) })
+        const opt = await context.ui.dialog.select({
+          title: t()("barItemsTitle"),
+          options: barItemChoices(signals),
+        })
         if (!opt) return
-        show(applyBarItem(api, signals, opt))
+        await show(applyBarItem(api, signals, opt))
       },
     },
     // ── /cache-tps ──
     {
       id: "opencode-cache-and-tps.cache.tps",
       title: "Cache: Set Speed Calculation",
-      description: "Exact TPS calc: output speed (decode only) or perceived speed (host footer, incl. first-token wait; v2 only), affecting bottom bar and sidebar",
+      description:
+        "Exact TPS calc: output speed (decode only) or perceived speed (host footer, incl. first-token wait; v2 only), affecting bottom bar and sidebar",
       group: "Cache",
       palette: true,
       slash: { name: "cache-tps" },
       run: async () => {
-        const opt = await context.ui.dialog.select({ title: t()("tpsModeTitle"), options: tpsModeChoices(signals, signals.tpsMode()) })
+        const opt = await context.ui.dialog.select({
+          title: t()("tpsModeTitle"),
+          options: tpsModeChoices(signals, signals.tpsMode()),
+        })
         if (!opt) return
-        show(applyTpsMode(api, signals, opt))
+        await show(applyTpsMode(api, signals, opt))
       },
     },
     // ── /cache-section ──
@@ -175,9 +223,12 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       palette: true,
       slash: { name: "cache-section" },
       run: async () => {
-        const opt = await context.ui.dialog.select({ title: t()("secToggle"), options: sectionChoices(api, signals) })
+        const opt = await context.ui.dialog.select({
+          title: t()("secToggle"),
+          options: sectionChoices(signals),
+        })
         if (!opt) return
-        show(applySection(api, signals, opt))
+        await show(applySection(api, signals, opt))
       },
     },
     // ── /cache-config ──
@@ -188,7 +239,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       group: "Cache",
       palette: true,
       slash: { name: "cache-config" },
-      run: () => show(configToast(api, signals)),
+      run: () => show(configToast(signals)),
     },
     // ── /cache-lang ──
     {
@@ -200,16 +251,20 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       slash: { name: "cache-lang" },
       run: async () => {
         const cur = signals.langCode()
-        const opt = await context.ui.dialog.select({ title: t()("langTitle"), options: langChoices(cur) })
+        const opt = await context.ui.dialog.select({
+          title: t()("langTitle"),
+          options: langChoices(cur),
+        })
         if (!opt) return
-        show(applyLang(api, signals, opt))
+        await show(applyLang(api, signals, opt))
       },
     },
     // ── /cache-balance ──
     {
       id: "opencode-cache-and-tps.cache.balance",
       title: "Cache: Switch Balance Provider",
-      description: "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
+      description:
+        "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
       group: "Cache",
       palette: true,
       slash: { name: "cache-balance" },
@@ -221,7 +276,10 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
           title: t()("balProvTitle"),
           options: [
             { title: autoLabel, value: "__auto__" },
-            ...balanceProviders.map((p) => ({ title: providerOptionTitle(p, current), value: p.id })),
+            ...balanceProviders.map((p) => ({
+              title: providerOptionTitle(p, current),
+              value: p.id,
+            })),
           ],
         })
         if (!opt) return
@@ -262,6 +320,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
         await api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
         await api.kv.set(`${KV_PREFIX}.balance.auto`, false)
         signals.setBalanceProviderId(provider.id)
+        signals.setBalanceUnsupported(false)
         signals.setAutoBalance(false)
         signals.setBalanceRefresh(signals.balanceRefresh() + 1)
         await promptBalanceKey(provider)
@@ -293,15 +352,23 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
             const tool = String(p.tool ?? "?")
             byTool[tool] = (byTool[tool] ?? 0) + 1
             if (tool === "skill") {
-              skillParts.push(`state.metadata=${JSON.stringify(p.state?.metadata)} | state.title="${p.state?.title}" | output[:80]="${String(p.state?.output ?? "").slice(0, 80)}"`)
+              skillParts.push(
+                `state.metadata=${JSON.stringify(p.state?.metadata)} | state.title="${p.state?.title}" | output[:80]="${String(p.state?.output ?? "").slice(0, 80)}"`,
+              )
             }
           }
         }
-        const summary = Object.entries(byTool).map(([k, v]) => `${k}: ${v}`).join(" | ")
-        const extra = skillParts.length > 0
-          ? "\n\nSkill parts:\n" + skillParts.join("\n")
-          : "\n\n⚠ No skill tool parts found — AI may be reading SKILL.md instead."
-        context.ui.toast.show({ title: `Tool Summary (${Object.keys(byTool).length} types)`, message: summary + extra })
+        const summary = Object.entries(byTool)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(" | ")
+        const extra =
+          skillParts.length > 0
+            ? "\n\nSkill parts:\n" + skillParts.join("\n")
+            : "\n\n⚠ No skill tool parts found — AI may be reading SKILL.md instead."
+        context.ui.toast.show({
+          title: `Tool Summary (${Object.keys(byTool).length} types)`,
+          message: summary + extra,
+        })
       },
     },
     // ── /cache-session ──
@@ -314,38 +381,18 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       slash: { name: "cache-session" },
       run: async () => {
         const parentSid = currentSessionID(context)
-        const SUBAGENT_TOOLS = new Set(["task", "delegate", "call_omo_agent"])
-        const children: { title: string; value: string; description: string }[] = []
-        if (parentSid) {
-          try {
-            for (const msg of api.state.session.messages(parentSid)) {
-              if (msg.role !== "assistant") continue
-              for (const p of api.state.part(msg.id)) {
-                if (p.type !== "tool") continue
-                const tool = String(p.tool ?? "")
-                if (!SUBAGENT_TOOLS.has(tool)) continue
-                const st = p.state as Record<string, unknown> | undefined
-                const stMeta = st?.metadata as Record<string, unknown> | undefined
-                const subSid = stMeta?.session_id ?? stMeta?.sessionId
-                if (!subSid) continue
-                const sidStr = String(subSid)
-                const input = st?.input as Record<string, unknown> | undefined
-                const agent = String(p.subagent_type ?? input?.subagent_type ?? input?.category ?? tool)
-                const prompt = String(input?.prompt ?? "")
-                const desc = input?.description ? String(input.description) : ""
-                const title = desc || prompt.replace(/\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || agent
-                children.push({ title, value: sidStr, description: `${agent} · ${sidStr.slice(0, 24)}…` })
-              }
-            }
-          } catch {}
-        }
-        const seen = new Set<string>()
-        const unique = children.filter((c) => { if (seen.has(c.value)) return false; seen.add(c.value); return true })
+        const unique = childSessionChoices(api, parentSid)
+
         if (unique.length > 0) {
-          const currentSid = signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "")
-          const options = unique.map((c, i) => ({ title: `${i + 1}. ${c.title}`, value: c.value, description: c.description }))
+          const currentSid =
+            signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "")
+          const options = unique.map((c, i) => ({
+            title: `${i + 1}. ${c.title}`,
+            value: c.value,
+            description: c.description,
+          }))
           const backValue = "__main__"
-          const backTitle = `\u2500 ${t()("backToMainTitle")}`
+          const backTitle = `─ ${t()("backToMainTitle")}`
           options.unshift({ title: backTitle, value: backValue, description: "" })
           options.push({ title: backTitle, value: backValue, description: "" })
           const currentIdx = currentSid ? options.findIndex((o) => o.value === currentSid) : -1
@@ -362,21 +409,26 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
           } else {
             signals.setOverrideSessionId(opt)
             await api.kv.set(`${KV_PREFIX}.session`, opt)
-            context.ui.toast.show({ message: t()("subAgentSwitched", { s: opt.slice(0, 24) + "\u2026" }) })
+            context.ui.toast.show({
+              message: t()("subAgentSwitched", { s: opt.slice(0, 24) + "…" }),
+            })
           }
         } else {
           const val = await context.ui.dialog.prompt({
             title: signals.overrideSessionId() ? t()("subSwitchTitle") : t()("subViewTitle"),
             description: t()("subNoFound"),
             placeholder: "ses_...",
-            value: signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "") ?? "",
+            value:
+              signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "") ?? "",
           })
           if (val === undefined) return
           const sid = val.trim()
           if (sid) {
             signals.setOverrideSessionId(sid)
             await api.kv.set(`${KV_PREFIX}.session`, sid)
-            context.ui.toast.show({ message: t()("subAgentSwitched", { s: sid.slice(0, 24) + "\u2026" }) })
+            context.ui.toast.show({
+              message: t()("subAgentSwitched", { s: sid.slice(0, 24) + "…" }),
+            })
           }
         }
       },
@@ -396,4 +448,14 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       },
     },
   ]
+  return commands.map((command) => ({
+    ...command,
+    run: async (input, event) => {
+      try {
+        await command.run(input, event)
+      } catch {
+        context.ui.toast.show({ message: t()("commandFailed") })
+      }
+    },
+  }))
 }

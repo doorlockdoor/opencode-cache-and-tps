@@ -11,17 +11,24 @@ function harness(opts: { auto?: boolean; messages?: any[]; modelProvider?: strin
     state: {
       session: {
         messages: () => opts.messages ?? [],
-        get: () => (opts.modelProvider ? { model: { providerID: opts.modelProvider, id: "m" } } : undefined),
+        get: () =>
+          opts.modelProvider ? { model: { providerID: opts.modelProvider, id: "m" } } : undefined,
       },
     },
   } as unknown as PanelApi
   const signals = {
     autoBalance: () => opts.auto !== false,
     balanceProviderId: () => provider,
-    setBalanceProviderId: (v: string) => { provider = v },
-    setBalanceUnsupported: (v: boolean) => { unsupported = v },
+    setBalanceProviderId: (v: string) => {
+      provider = v
+    },
+    setBalanceUnsupported: (v: boolean) => {
+      unsupported = v
+    },
     balanceRefresh: () => refresh,
-    setBalanceRefresh: (v: number) => { refresh = v },
+    setBalanceRefresh: (v: number) => {
+      refresh = v
+    },
   } as unknown as PanelSignals
   return { api, signals, state: () => ({ provider, unsupported, refresh }) }
 }
@@ -68,4 +75,4 @@ function harness(opts: { auto?: boolean; messages?: any[]; modelProvider?: strin
   assert.deepEqual(h2.state(), { provider: "deepseek", unsupported: false, refresh: 0 })
 }
 
-console.log("balance auto-switch tests passed")
+console.log("余额自动切换测试通过")

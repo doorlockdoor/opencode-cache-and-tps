@@ -4,21 +4,37 @@
 // ---------------------------------------------------------------------------
 import type { PanelApi, PanelSignals, DisplayStyle, TpsMode } from "./panel/panel-api"
 import { KV_PREFIX } from "./panel/panel-api"
-import { BAR_ITEMS, STYLES, TPS_MODES, readBarItem, readDisplayStyle, readTpsMode, type BarItemId } from "./live"
+import {
+  BAR_ITEMS,
+  STYLES,
+  TPS_MODES,
+  readBarItem,
+  readDisplayStyle,
+  readTpsMode,
+  type BarItemId,
+} from "./live"
 import { CURRENCIES, DEFAULT_RATES } from "./currency"
 import { balanceProviders } from "./balance-providers"
-import { LANG_META, createT, type Translation, type LangCode } from "./i18n"
+import { LANG_META, createT, type Translation, type LangCode, detectLang } from "./i18n"
 import { visualPadEnd } from "./ui"
 
 /** 下拉项（与两壳 DialogSelect / dialog.select 的选项形状兼容）。 */
-export interface Choice<V> { title: string; value: V }
+export interface Choice<V> {
+  title: string
+  value: V
+}
 /** 待宿主显示的 toast（壳层负责 api.ui.toast / context.ui.toast.show）。 */
-export interface ToastMsg { message: string; title?: string; duration?: number }
+export interface ToastMsg {
+  message: string
+  title?: string
+  duration?: number
+}
 
 const tr = (signals: PanelSignals) => createT(() => signals.langCode())
 
 /** 通用「标签 + [ON/OFF]」选项标题（宽度与旧实现一致）。 */
-export const toggleTitle = (label: string, on: boolean): string => `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
+export const toggleTitle = (label: string, on: boolean): string =>
+  `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
 
 /**
  * 单选菜单选项（注册表驱动）：标签定宽 + 当前项打勾。
@@ -29,78 +45,106 @@ export function radioChoices<T extends string>(
   current: string,
   width: number,
 ): Choice<T>[] {
-  return items.map((it) => ({ title: `${visualPadEnd(it.label, width)}${current === it.id ? "\u2713" : ""}`, value: it.id }))
+  return items.map((it) => ({
+    title: `${visualPadEnd(it.label, width)}${current === it.id ? "✓" : ""}`,
+    value: it.id,
+  }))
 }
 
 /** 区块 key ↔ i18n 标签键。 */
 const SECTION_LABEL_KEYS: Record<string, keyof Translation> = {
-  detail: "secDetail", model: "secModel", dist: "distTitle", skills: "secSkills",
-  perf: "secPerf", balance: "secBalance", bottom: "secBottom", border: "secBorder",
+  detail: "secDetail",
+  model: "secModel",
+  dist: "distTitle",
+  skills: "secSkills",
+  perf: "secPerf",
+  balance: "secBalance",
+  bottom: "secBottom",
+  border: "secBorder",
 }
 
-// ── currency ────────────────────────────────────────────────────────────────
+// ── 币种 ────────────────────────────────────────────────────────────────
 
 export function currencyChoices(): Choice<string>[] {
-  return Object.entries(CURRENCIES).map(([code, sym]) => ({ title: `${code}  (${sym})`, value: code }))
+  return Object.entries(CURRENCIES).map(([code, sym]) => ({
+    title: `${code}  (${sym})`,
+    value: code,
+  }))
 }
 
-export function applyCurrency(api: PanelApi, signals: PanelSignals, code: string): ToastMsg {
+export async function applyCurrency(
+  api: PanelApi,
+  signals: PanelSignals,
+  code: string,
+): Promise<ToastMsg> {
   const t = tr(signals)
   const sym = CURRENCIES[code] ?? "$"
   const rate = DEFAULT_RATES[code] ?? 1
-  api.kv.set(`${KV_PREFIX}.currency`, sym)
-  api.kv.set(`${KV_PREFIX}.rate`, rate)
   // 同步余额显示币种偏好：CNY/USD 原生直显，其余币种按汇率换算
-  api.kv.set(`${KV_PREFIX}.balance_currency`, code)
   signals.setBalanceCurrency(code)
   signals.setCurrencySymbol(sym)
   signals.setExchangeRate(rate)
+  await api.kv.set(`${KV_PREFIX}.currency`, sym)
+  await api.kv.set(`${KV_PREFIX}.rate`, rate)
+  await api.kv.set(`${KV_PREFIX}.balance_currency`, code)
   return { message: t("currencySet", { v: code, s: sym, r: rate }) }
 }
 
-// ── exchange rate ───────────────────────────────────────────────────────────
+// ── 汇率 ───────────────────────────────────────────────────────────
 
 /** 解析并应用汇率；非法（≤0）返回 null（调用方不弹 toast）。 */
-export function applyRate(api: PanelApi, signals: PanelSignals, raw: string): ToastMsg | null {
-  const n = parseFloat(raw)
-  if (!(n > 0)) return null
-  api.kv.set(`${KV_PREFIX}.rate`, n)
+export async function applyRate(
+  api: PanelApi,
+  signals: PanelSignals,
+  raw: string,
+): Promise<ToastMsg | null> {
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n) || !(n > 0)) return null
   signals.setExchangeRate(n)
+  await api.kv.set(`${KV_PREFIX}.rate`, n)
   return { message: tr(signals)("rateSet", { r: n }) }
 }
 
-// ── perf model filter ───────────────────────────────────────────────────────
+// ── 性能模型过滤 ───────────────────────────────────────────────────────
 
-export function applyPerfFilter(api: PanelApi, signals: PanelSignals): ToastMsg {
-  const cur = Boolean(api.kv.get(`${KV_PREFIX}.perf_model_filter`, true))
-  api.kv.set(`${KV_PREFIX}.perf_model_filter`, !cur)
+export async function applyPerfFilter(api: PanelApi, signals: PanelSignals): Promise<ToastMsg> {
+  const cur = signals.perfModelFilter()
   signals.setPerfModelFilter(!cur)
   const t = tr(signals)
+  await api.kv.set(`${KV_PREFIX}.perf_model_filter`, !cur)
   return { message: t(!cur ? "perfFilterOn" : "perfFilterOff") }
 }
 
-// ── display style ───────────────────────────────────────────────────────────
+// ── 显示样式 ───────────────────────────────────────────────────────────
 
 /** 显示样式菜单选项（/cache-style；全段两态共用）。 */
 export function styleChoices(signals: PanelSignals, current: string): Choice<DisplayStyle>[] {
   const t = tr(signals)
-  return radioChoices(STYLES.map((s) => ({ id: s.id, label: t(s.labelKey) })), current, 10)
+  return radioChoices(
+    STYLES.map((s) => ({ id: s.id, label: t(s.labelKey) })),
+    current,
+    10,
+  )
 }
 
-export function applyStyle(api: PanelApi, signals: PanelSignals, id: string): ToastMsg {
+export async function applyStyle(
+  api: PanelApi,
+  signals: PanelSignals,
+  id: string,
+): Promise<ToastMsg> {
   const t = tr(signals)
   const hit = STYLES.find((s) => s.id === id)
   const style: DisplayStyle = hit ? hit.id : "default"
-  api.kv.set(`${KV_PREFIX}.style`, style)
   signals.setStyle(style)
+  await api.kv.set(`${KV_PREFIX}.style`, style)
   return { message: t("styleSet", { s: t(hit ? hit.labelKey : "styleDefault") }) }
 }
 
-// ── sidebar sections ────────────────────────────────────────────────────────
+// ── 侧栏区块 ────────────────────────────────────────────────────────
 
-export function sectionChoices(api: PanelApi, signals: PanelSignals): Choice<string>[] {
+export function sectionChoices(signals: PanelSignals): Choice<string>[] {
   const t = tr(signals)
-  const on = (k: string, def = true) => Boolean(api.kv.get(`${KV_PREFIX}.section.${k}`, def))
+  const on = (k: string) => sectionGetters(signals)[k]()
   return [
     { title: toggleTitle(t("secDetail"), on("detail")), value: "detail" },
     { title: toggleTitle(t("secModel"), on("model")), value: "model" },
@@ -109,21 +153,24 @@ export function sectionChoices(api: PanelApi, signals: PanelSignals): Choice<str
     { title: toggleTitle(t("secPerf"), on("perf")), value: "perf" },
     { title: toggleTitle(t("secBalance"), on("balance")), value: "balance" },
     { title: toggleTitle(t("secBottom"), on("bottom")), value: "bottom" },
-    { title: toggleTitle(t("secBorder"), Boolean(api.kv.get(`${KV_PREFIX}.border`, true))), value: "border" },
+    { title: toggleTitle(t("secBorder"), signals.borderVisible()), value: "border" },
   ]
 }
 
-export function applySection(api: PanelApi, signals: PanelSignals, id: string): ToastMsg {
+export async function applySection(
+  api: PanelApi,
+  signals: PanelSignals,
+  id: string,
+): Promise<ToastMsg> {
   const t = tr(signals)
   if (id === "border") {
-    const cur = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
-    api.kv.set(`${KV_PREFIX}.border`, !cur)
+    const cur = signals.borderVisible()
     signals.setBorderVisible(!cur)
+    await api.kv.set(`${KV_PREFIX}.border`, !cur)
     return { message: !cur ? t("borderShown") : t("borderHidden") }
   }
   const key = `${KV_PREFIX}.section.${id}`
-  const cur = Boolean(api.kv.get(key, true))
-  api.kv.set(key, !cur)
+  const cur = sectionGetters(signals)[id]?.() ?? true
   if (id === "detail") signals.setSectionDetail(!cur)
   if (id === "model") signals.setSectionModel(!cur)
   if (id === "dist") signals.setSectionDist(!cur)
@@ -131,7 +178,12 @@ export function applySection(api: PanelApi, signals: PanelSignals, id: string): 
   if (id === "perf") signals.setSectionPerf(!cur)
   if (id === "balance") signals.setSectionBalance(!cur)
   if (id === "bottom") signals.setSectionBottom(!cur)
-  return { message: t(!cur ? "sectionShown" : "sectionHidden", { s: t(SECTION_LABEL_KEYS[id] ?? "secToggle") }) }
+  await api.kv.set(key, !cur)
+  return {
+    message: t(!cur ? "sectionShown" : "sectionHidden", {
+      s: t(SECTION_LABEL_KEYS[id] ?? "secToggle"),
+    }),
+  }
 }
 
 // ── content segments（/cache-bar 唯一段菜单；段两态行为见 BAR_ITEMS 注释）──
@@ -150,18 +202,29 @@ function barItemSetters(signals: PanelSignals): Record<BarItemId, (v: boolean) =
 }
 
 /** 内容段菜单选项（注册表驱动，7 段）。速度计算方式已独立为 /cache-tps。 */
-export function barItemChoices(api: PanelApi, signals: PanelSignals): Choice<BarItemId>[] {
+export function barItemChoices(signals: PanelSignals): Choice<BarItemId>[] {
   const t = tr(signals)
-  return BAR_ITEMS.map((it) => ({ title: toggleTitle(t(it.labelKey), readBarItem(api.kv, it.id)), value: it.id }))
+  return BAR_ITEMS.map((it) => ({
+    title: toggleTitle(t(it.labelKey), barItemGetters(signals)[it.id]()),
+    value: it.id,
+  }))
 }
 
-export function applyBarItem(api: PanelApi, signals: PanelSignals, id: BarItemId): ToastMsg {
+export async function applyBarItem(
+  api: PanelApi,
+  signals: PanelSignals,
+  id: BarItemId,
+): Promise<ToastMsg> {
   const t = tr(signals)
-  const cur = readBarItem(api.kv, id)
-  api.kv.set(`${KV_PREFIX}.bar.${id}`, !cur)
+  const cur = barItemGetters(signals)[id]()
   barItemSetters(signals)[id](!cur)
   const item = BAR_ITEMS.find((i) => i.id === id)
-  return { message: t(!cur ? "sectionShown" : "sectionHidden", { s: t(item ? item.labelKey : "barItemsTitle") }) }
+  await api.kv.set(`${KV_PREFIX}.bar.${id}`, !cur)
+  return {
+    message: t(!cur ? "sectionShown" : "sectionHidden", {
+      s: t(item ? item.labelKey : "barItemsTitle"),
+    }),
+  }
 }
 
 // ── speed calculation mode（/cache-tps 独立菜单；仅 V2 注册，V1 无 streamed 无法计算体感）──
@@ -169,15 +232,23 @@ export function applyBarItem(api: PanelApi, signals: PanelSignals, id: BarItemId
 /** 速度计算方式菜单选项（注册表驱动；当前项打勾，同 /cache-style）。 */
 export function tpsModeChoices(signals: PanelSignals, current: TpsMode): Choice<TpsMode>[] {
   const t = tr(signals)
-  return radioChoices(TPS_MODES.map((m) => ({ id: m.id, label: t(m.labelKey) })), current, 16)
+  return radioChoices(
+    TPS_MODES.map((m) => ({ id: m.id, label: t(m.labelKey) })),
+    current,
+    16,
+  )
 }
 
-export function applyTpsMode(api: PanelApi, signals: PanelSignals, id: string): ToastMsg {
+export async function applyTpsMode(
+  api: PanelApi,
+  signals: PanelSignals,
+  id: string,
+): Promise<ToastMsg> {
   const t = tr(signals)
   const hit = TPS_MODES.find((m) => m.id === id)
   const mode: TpsMode = hit ? hit.id : "output"
-  api.kv.set(`${KV_PREFIX}.tps_mode`, mode)
   signals.setTpsMode(mode)
+  await api.kv.set(`${KV_PREFIX}.tps_mode`, mode)
   return { message: t("tpsModeSet", { s: t(hit ? hit.labelKey : "tpsOutput") }) }
 }
 
@@ -189,8 +260,24 @@ export function applyTpsMode(api: PanelApi, signals: PanelSignals, id: string): 
  * 侧栏隐藏或未挂载也需生效，故由常驻层调用。
  */
 export function restorePanelPrefs(api: PanelApi, signals: PanelSignals): void {
+  void migrateLegacyKey(api).catch((error) =>
+    console.error("[cache-panel] 无法迁移余额密钥", error),
+  )
+  const symbol = api.kv.get<string>(KV_PREFIX + ".currency")
+  const rate = api.kv.get<number>(KV_PREFIX + ".rate")
+  const currency = api.kv.get<string>(KV_PREFIX + ".balance_currency")
+  if (typeof symbol === "string") signals.setCurrencySymbol(symbol)
+  if (typeof rate === "number" && Number.isFinite(rate) && rate > 0) signals.setExchangeRate(rate)
+  if (typeof currency === "string" && (currency === "" || currency in CURRENCIES))
+    signals.setBalanceCurrency(currency)
+  const sections = sectionSetters(signals)
+  for (const id of Object.keys(sections))
+    sections[id](api.kv.get<boolean>(KV_PREFIX + ".section." + id, true) !== false)
+  signals.setBorderVisible(api.kv.get<boolean>(KV_PREFIX + ".border", true) !== false)
+
   const savedLang = api.kv.get<string>(`${KV_PREFIX}.lang`)
-  if (savedLang && LANG_META.some((m) => m.code === savedLang)) signals.setLangCode(savedLang as LangCode)
+  if (savedLang && LANG_META.some((m) => m.code === savedLang))
+    signals.setLangCode(savedLang as LangCode)
   signals.setStyle(readDisplayStyle(api.kv))
   signals.setPerfModelFilter(api.kv.get<boolean>(`${KV_PREFIX}.perf_model_filter`, true) !== false)
   const setBarItem = barItemSetters(signals)
@@ -203,34 +290,104 @@ export function restorePanelPrefs(api: PanelApi, signals: PanelSignals): void {
   }
   const auto = api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
   if (typeof auto === "boolean") signals.setAutoBalance(auto)
+  signals.setBalanceRefresh(signals.balanceRefresh() + 1)
 }
 
-// ── language ────────────────────────────────────────────────────────────────
+async function migrateLegacyKey(api: PanelApi): Promise<void> {
+  const legacy = api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+  if (!legacy) return
+  if (!api.kv.get<string>(`${KV_PREFIX}.balance.deepseek.key`, ""))
+    await api.kv.set(`${KV_PREFIX}.balance.deepseek.key`, legacy)
+  await api.kv.set(`${KV_PREFIX}.ds_key`, "")
+}
+
+// ── 语言 ────────────────────────────────────────────────────────────────
 
 export function langChoices(current: LangCode): Choice<LangCode>[] {
-  return radioChoices(LANG_META.map((m) => ({ id: m.code, label: m.label })), current, 9)
+  return radioChoices(
+    LANG_META.map((m) => ({ id: m.code, label: m.label })),
+    current,
+    9,
+  )
 }
 
-export function applyLang(api: PanelApi, signals: PanelSignals, code: LangCode): ToastMsg {
-  api.kv.set(`${KV_PREFIX}.lang`, code)
+export async function applyLang(
+  api: PanelApi,
+  signals: PanelSignals,
+  code: LangCode,
+): Promise<ToastMsg> {
   signals.setLangCode(code)
+  await api.kv.set(`${KV_PREFIX}.lang`, code)
   return { message: tr(signals)("langSwitched") }
 }
 
-// ── config summary ──────────────────────────────────────────────────────────
+// ── 配置摘要 ──────────────────────────────────────────────────────────
 
-export function configToast(api: PanelApi, signals: PanelSignals): ToastMsg {
+export function configToast(signals: PanelSignals): ToastMsg {
   const t = tr(signals)
-  const sym = api.kv.get<string>(`${KV_PREFIX}.currency`) ?? "$"
-  const rate = api.kv.get<number>(`${KV_PREFIX}.rate`) ?? 1
-  const on = (k: string, def = true) => (Boolean(api.kv.get(`${KV_PREFIX}.section.${k}`, def)) ? "ON" : "OFF")
+  const sym = signals.currencySymbol()
+  const rate = signals.exchangeRate()
+  const on = (k: string) => (sectionGetters(signals)[k]() ? "ON" : "OFF")
   return {
     title: t("panelConfigTitle"),
     message: t("panelConfigMsg", {
-      c: sym, r: rate,
-      d: on("detail"), m: on("model"), t: on("dist"), k: on("skills"),
-      p: on("perf"), b: on("balance"), f: on("bottom"),
+      c: sym,
+      r: rate,
+      d: on("detail"),
+      m: on("model"),
+      t: on("dist"),
+      k: on("skills"),
+      p: on("perf"),
+      b: on("balance"),
+      f: on("bottom"),
     }),
     duration: 8000,
+  }
+}
+
+function sectionGetters(s: PanelSignals): Record<string, () => boolean> {
+  return {
+    detail: s.sectionDetail,
+    model: s.sectionModel,
+    dist: s.sectionDist,
+    skills: s.sectionSkills,
+    perf: s.sectionPerf,
+    balance: s.sectionBalance,
+    bottom: s.sectionBottom,
+  }
+}
+function sectionSetters(s: PanelSignals): Record<string, (v: boolean) => void> {
+  return {
+    detail: s.setSectionDetail,
+    model: s.setSectionModel,
+    dist: s.setSectionDist,
+    skills: s.setSectionSkills,
+    perf: s.setSectionPerf,
+    balance: s.setSectionBalance,
+    bottom: s.setSectionBottom,
+  }
+}
+function barItemGetters(s: PanelSignals): Record<BarItemId, () => boolean> {
+  return {
+    hit: s.barShowHit,
+    tokens: s.barShowTokens,
+    balance: s.barShowBalance,
+    ttft: s.barShowTtft,
+    speed: s.barShowSpeed,
+    lat: s.barShowLat,
+    tool: s.barShowTool,
+  }
+}
+
+export async function notifySetting(
+  message: ToastMsg | null | Promise<ToastMsg | null>,
+  show: (message: ToastMsg) => void,
+  signals?: PanelSignals,
+): Promise<void> {
+  try {
+    const result = await message
+    if (result) show(result)
+  } catch {
+    show({ message: createT(() => signals?.langCode() ?? detectLang())("saveFailed") })
   }
 }

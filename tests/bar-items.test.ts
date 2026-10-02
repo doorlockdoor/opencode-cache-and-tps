@@ -1,5 +1,16 @@
 import assert from "node:assert/strict"
-import { BAR_ITEMS, TPS_MODES, readBarItem, readDisplayStyle, readTpsMode, liveStatSegs, perfLabel, pushPerfSegs, type LiveEnabled, type Translate } from "../src/live"
+import {
+  BAR_ITEMS,
+  TPS_MODES,
+  readBarItem,
+  readDisplayStyle,
+  readTpsMode,
+  liveStatSegs,
+  perfLabel,
+  pushPerfSegs,
+  type LiveEnabled,
+  type Translate,
+} from "../src/live"
 import { KV_PREFIX } from "../src/panel/panel-api"
 
 // ── 内容段注册表默认值：命中/速度/工具 开，Tokens/首字/延迟/余额 关 ──────────
@@ -7,7 +18,15 @@ import { KV_PREFIX } from "../src/panel/panel-api"
 {
   const defaults: Record<string, boolean> = {}
   for (const it of BAR_ITEMS) defaults[it.id] = it.default
-  assert.deepEqual(defaults, { hit: true, tokens: false, balance: false, ttft: false, speed: true, lat: false, tool: true })
+  assert.deepEqual(defaults, {
+    hit: true,
+    tokens: false,
+    balance: false,
+    ttft: false,
+    speed: true,
+    lat: false,
+    tool: true,
+  })
   assert.equal(BAR_ITEMS.length, 7)
 }
 
@@ -18,7 +37,9 @@ import { KV_PREFIX } from "../src/panel/panel-api"
     ready: true,
     get: <T>(key: string, fallback?: T): T | undefined =>
       store.has(key) ? (store.get(key) as T) : fallback,
-    set: (key: string, value: unknown) => { store.set(key, value) },
+    set: (key: string, value: unknown) => {
+      store.set(key, value)
+    },
   }
 
   assert.equal(readBarItem(kv, "hit"), true)
@@ -40,14 +61,23 @@ import { KV_PREFIX } from "../src/panel/panel-api"
 {
   type Kv = Parameters<typeof readTpsMode>[0]
   const mk = (entries: Record<string, unknown>): Kv =>
-    ({ get: <T>(key: string, fallback?: T): T | undefined => (key in entries ? (entries[key] as T) : fallback) }) as unknown as Kv
-  assert.deepEqual(TPS_MODES.map((m) => m.id), ["output", "perceived"])
+    ({
+      get: <T>(key: string, fallback?: T): T | undefined =>
+        key in entries ? (entries[key] as T) : fallback,
+    }) as unknown as Kv
+  assert.deepEqual(
+    TPS_MODES.map((m) => m.id),
+    ["output", "perceived"],
+  )
   assert.equal(readTpsMode(mk({})), "output")
   assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "perceived" })), "perceived")
   assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "bogus" })), "output")
   assert.equal(readTpsMode(mk({ "cache_panel.tps_host": true })), "perceived") // 旧键迁移
   assert.equal(readTpsMode(mk({ "cache_panel.tps_host": false })), "output")
-  assert.equal(readTpsMode(mk({ "cache_panel.tps_mode": "output", "cache_panel.tps_host": true })), "output") // 新键优先
+  assert.equal(
+    readTpsMode(mk({ "cache_panel.tps_mode": "output", "cache_panel.tps_host": true })),
+    "output",
+  ) // 新键优先
 }
 
 // ── liveStatSegs：段开关逐段生效；tool 相位随「工具」项切换 ─────────────────
@@ -59,17 +89,40 @@ import { KV_PREFIX } from "../src/panel/panel-api"
   const texts = (segs: { text: string }[]) => segs.map((s) => s.text).join("")
 
   // streaming（首字+速度）：首字精确值 · 实时速度
-  const streaming = { phase: "streaming" as const, waitMs: null, ttft: 500, tps: 12.5, elapsed: 2500, toolMs: null }
-  assert.equal(texts(liveStatSegs(streaming, t, "m", "x", "default", basic)), "barTTFT 0.50s \u00b7 barTPS 12.5 tokS")
+  const streaming = {
+    phase: "streaming" as const,
+    waitMs: null,
+    ttft: 500,
+    tps: 12.5,
+    elapsed: 2500,
+    toolMs: null,
+  }
+  assert.equal(
+    texts(liveStatSegs(streaming, t, "m", "x", "default", basic)),
+    "barTTFT 0.50s · barTPS 12.5 tokS",
+  )
 
   // 延迟段开启 → 追加进行中净生成时长；全关 → 空（调用方回落精确值）
   assert.match(texts(liveStatSegs(streaming, t, "m", "x", "default", all)), /barLat 2\.50s…/)
   assert.equal(liveStatSegs(streaming, t, "m", "x", "default", off).length, 0)
 
   // 首字关闭：分隔符不残留前导「·」（default 风格标签仍在）
-  assert.equal(texts(liveStatSegs(streaming, t, "m", "x", "default", { ttft: false, tps: true, lat: false, tool: false })), "barTPS 12.5 tokS")
+  assert.equal(
+    texts(
+      liveStatSegs(streaming, t, "m", "x", "default", {
+        ttft: false,
+        tps: true,
+        lat: false,
+        tool: false,
+      }),
+    ),
+    "barTPS 12.5 tokS",
+  )
   // dsh：速度/延迟标签省去（仅保留「首 Token」文案）
-  assert.equal(texts(liveStatSegs(streaming, t, "m", "x", "dsh", basic)), "barFirstToken 0.50s \u00b7 12.5 tokS")
+  assert.equal(
+    texts(liveStatSegs(streaming, t, "m", "x", "dsh", basic)),
+    "barFirstToken 0.50s · 12.5 tokS",
+  )
 
   // perfLabel：精确段标签与实时块同口径
   assert.equal(perfLabel("default", t, "ttft"), "barTTFT")
@@ -80,16 +133,37 @@ import { KV_PREFIX } from "../src/panel/panel-api"
   assert.equal(perfLabel("min", t, "ttft"), null)
 
   // prefill：等待进行中（速度/延迟无值不显示）
-  const prefill = { phase: "prefill" as const, waitMs: 800, ttft: null, tps: null, elapsed: null, toolMs: null }
+  const prefill = {
+    phase: "prefill" as const,
+    waitMs: 800,
+    ttft: null,
+    tps: null,
+    elapsed: null,
+    toolMs: null,
+  }
   assert.equal(texts(liveStatSegs(prefill, t, "m", "x", "default", basic)), "barTTFT 0.80s…")
-  assert.equal(liveStatSegs(prefill, t, "m", "x", "default", { ttft: false, tps: true, lat: true, tool: true }).length, 0)
+  assert.equal(
+    liveStatSegs(prefill, t, "m", "x", "default", { ttft: false, tps: true, lat: true, tool: true })
+      .length,
+    0,
+  )
 
   // tool 相位：「工具」项开 → 仅工具计时；关 → 冻结的实时值照常逐段显示
-  const tool = { phase: "tool" as const, waitMs: null, ttft: 500, tps: 12.5, elapsed: 2500, toolMs: 1000 }
-  assert.equal(texts(liveStatSegs(tool, t, "m", "x", "default", { ...basic, tool: true })), "barTool 1.00s…")
+  const tool = {
+    phase: "tool" as const,
+    waitMs: null,
+    ttft: 500,
+    tps: 12.5,
+    elapsed: 2500,
+    toolMs: 1000,
+  }
+  assert.equal(
+    texts(liveStatSegs(tool, t, "m", "x", "default", { ...basic, tool: true })),
+    "barTool 1.00s…",
+  )
   assert.equal(
     texts(liveStatSegs(tool, t, "m", "x", "default", basic)),
-    "barTTFT 0.50s \u00b7 barTPS 12.5 tokS",
+    "barTTFT 0.50s · barTPS 12.5 tokS",
   )
 }
 
@@ -97,8 +171,14 @@ import { KV_PREFIX } from "../src/panel/panel-api"
 {
   type Kv = Parameters<typeof readDisplayStyle>[0]
   const mk = (entries: Record<string, unknown>): Kv =>
-    ({ get: <T>(key: string, fallback?: T): T | undefined => (key in entries ? (entries[key] as T) : fallback) }) as unknown as Kv
-  assert.equal(readDisplayStyle(mk({ "cache_panel.style": "min", "cache_panel.style_live": "dsh" })), "min")
+    ({
+      get: <T>(key: string, fallback?: T): T | undefined =>
+        key in entries ? (entries[key] as T) : fallback,
+    }) as unknown as Kv
+  assert.equal(
+    readDisplayStyle(mk({ "cache_panel.style": "min", "cache_panel.style_live": "dsh" })),
+    "min",
+  )
   assert.equal(readDisplayStyle(mk({ "cache_panel.style_live": "dsh" })), "dsh")
   assert.equal(readDisplayStyle(mk({ "cache_panel.style_bar": "min" })), "min")
   assert.equal(readDisplayStyle(mk({ "cache_panel.tps_style": "dsh" })), "dsh")
@@ -112,24 +192,38 @@ import { KV_PREFIX } from "../src/panel/panel-api"
   const sample = { ttft: 500, tps: 12.5, latency: 2500 }
   const run = (over: Partial<Parameters<typeof pushPerfSegs>[2]>) => {
     const out: { text: string; color: string | undefined }[] = []
-    const sep = () => { if (out.length) out.push({ text: " \u00b7 ", color: "m" }) }
+    const sep = () => {
+      if (out.length) out.push({ text: " · ", color: "m" })
+    }
     pushPerfSegs(out, sep, {
-      style: "default", t, sample, tps: sample.tps, ttft: true, speed: true, lat: true, muted: "m", text: "x", ...over,
+      style: "default",
+      t,
+      sample,
+      tps: sample.tps,
+      ttft: true,
+      speed: true,
+      lat: true,
+      muted: "m",
+      text: "x",
+      ...over,
     })
     return out.map((s) => s.text).join("")
   }
-  assert.equal(run({}), "barTTFT 0.50s \u00b7 barTPS 12.5 tokS \u00b7 barLat 2.50s")
+  assert.equal(run({}), "barTTFT 0.50s · barTPS 12.5 tokS · barLat 2.50s")
   // 首字/延迟关 → 仅速度，无前导分隔符
   assert.equal(run({ ttft: false, lat: false }), "barTPS 12.5 tokS")
   // 速度取 null → 隐藏，首字/延迟照常
-  assert.equal(run({ tps: null }), "barTTFT 0.50s \u00b7 barLat 2.50s")
+  assert.equal(run({ tps: null }), "barTTFT 0.50s · barLat 2.50s")
   // 最新 step 只有首字/延迟，速度取会话中最近一次有效 TPS 时仍应显示
-  assert.equal(run({ sample: { ...sample, tps: null }, tps: 223.7 }), "barTTFT 0.50s \u00b7 barTPS 223.7 tokS \u00b7 barLat 2.50s")
+  assert.equal(
+    run({ sample: { ...sample, tps: null }, tps: 223.7 }),
+    "barTTFT 0.50s · barTPS 223.7 tokS · barLat 2.50s",
+  )
   // 样本为 null → 首字/延迟隐藏（速度仍可显）
   assert.equal(run({ sample: null }), "barTPS 12.5 tokS")
   // dsh：首字「首 Token」、速度/延迟省标签；min：全省标签
-  assert.equal(run({ style: "dsh" }), "barFirstToken 0.50s \u00b7 12.5 tokS \u00b7 2.50s")
-  assert.equal(run({ style: "min" }), "0.50s \u00b7 12.5 tokS \u00b7 2.50s")
+  assert.equal(run({ style: "dsh" }), "barFirstToken 0.50s · 12.5 tokS · 2.50s")
+  assert.equal(run({ style: "min" }), "0.50s · 12.5 tokS · 2.50s")
 }
 
-console.log("bar items tests passed")
+console.log("底栏内容段测试通过")

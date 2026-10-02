@@ -1,24 +1,14 @@
 // ---------------------------------------------------------------------------
-// Token helpers — pure, dependency-free (unit-testable).
+// token 工具：无外部依赖的纯函数，便于单元测试。
 // ---------------------------------------------------------------------------
 
-/** Coerce unknown to a finite number; non-numbers become 0. */
+/** 取有限数值，非数值或非有限值返回 0。 */
 export function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0
 }
 
-// ── token estimation ──
-// Character-based BPE approximation. 密度校准（2026-09，DeepSeek-V4 官方
-// tokenizer + GPT o200k 对用户真实会话的实测拟合，见 benchmarks/ 注释）：
-//   汉字：~1.5 字/token（o200k 实测 1.34、DS-V4 1.52、答案段拟合 1.43 → 1.5 折中）
-//   ASCII 散文：~3.3 字符/token（DS-V4 3.12 / o200k 3.45）
-//   ASCII 代码/JSON：~3.7 字符/token（DS-V4 3.71 / o200k 3.92）
-//   假名/谚文：~1.0 字/token
-// 不同 part 形态的真实密度差异显著（同模型：答案段 ascii 2.97 vs 思考段 4.04），
-// 故以 profile 参数区分：估算 tokens 时按 part 形态传 profile（省略参数走
-// default 检测路径）。default 保留 jsonLike/codeLike 检测（JSON/源码几乎每个
-// 标点独立 token，需收紧）。
-// See: GPT-4 / Claude tokenizer behaviour with structured text.
+// 按字符估算 token，分别使用推理、答案和工具内容的密度。
+// 标定脚本位于 benchmarks/；此处折算系数保持保守。
 
 /** token 密度画像：按 part 形态选择 ASCII 字符/token 折算系数。 */
 export type TokProfile = "thinking" | "answer" | "code"
@@ -26,8 +16,8 @@ export type TokProfile = "thinking" | "answer" | "code"
 /** 各画像的 ASCII 密度（字符/token，实测标定）。 */
 export const ASCII_PER_TOKEN: Record<TokProfile, number> = {
   thinking: 4.0, // reasoning part：~95% ascii 思考流（实测密度 4.04）
-  answer: 2.9,   // text part：符号/代码片段密集的答案（实测 2.97，含全角/符号稀释）
-  code: 3.7,     // tool raw/output：纯代码/命令输出（实测密度 3.71）
+  answer: 2.9, // text part：符号/代码片段密集的答案（实测 2.97，含全角/符号稀释）
+  code: 3.7, // tool raw/output：纯代码/命令输出（实测密度 3.71）
 }
 
 /** 估算文本 token 数：CJK 系按字计，ASCII 按 profile 密度折算；省略 profile 时按文本形态自动检测。 */
@@ -38,34 +28,41 @@ export function estimateTokens(text: string, profile?: TokProfile): number {
   let han = 0 // 汉字：o200k 平均 ~1.5 字/token
   for (const c of text) {
     const code = c.codePointAt(0) ?? 0
-    if (code >= 0x4E00 && code <= 0x9FFF) han++        // CJK Unified 汉字
-    else if (code >= 0x3040 && code <= 0x30FF) cjk++   // Hiragana/Katakana
-    else if (code >= 0x3000 && code <= 0x303F) cjk++   // CJK 全角标点（密度~1 字/token，归 ascii 会低估答案段）
-    else if (code >= 0xFF00 && code <= 0xFFEF) cjk++   // 全角形式（０ａｂ＊，同上）
-    else if (code >= 0xAC00 && code <= 0xD7A3) cjk++   // Hangul
-    else if (code >= 0x1100 && code <= 0x11FF) cjk++   // Hangul Jamo
-    else if (code >= 0x2E80 && code <= 0x2EFF) cjk++   // CJK Radicals
+    if (code >= 0x4e00 && code <= 0x9fff)
+      han++ // CJK Unified 汉字
+    else if (code >= 0x3040 && code <= 0x30ff)
+      cjk++ // 平假名 / 片假名
+    else if (code >= 0x3000 && code <= 0x303f)
+      cjk++ // CJK 全角标点（密度~1 字/token，归 ascii 会低估答案段）
+    else if (code >= 0xff00 && code <= 0xffef)
+      cjk++ // 全角形式（０ａｂ＊，同上）
+    else if (code >= 0xac00 && code <= 0xd7a3)
+      cjk++ // 韩文音节
+    else if (code >= 0x1100 && code <= 0x11ff)
+      cjk++ // 韩文字母
+    else if (code >= 0x2e80 && code <= 0x2eff)
+      cjk++ // 中日韩部首
     else ascii++
   }
 
-  // Real BPE tokenizers (cl100k_base, o200k_base) average ~3.5-4.0
-  // ASCII chars/token for both JSON and source code — close to prose.
-  // The old 2.0 / 2.5 ratios matched minified-JS extremes, not typical
-  // payloads, and systematically over-estimated token counts.
   let asciiPerToken: number
   if (profile) {
     asciiPerToken = ASCII_PER_TOKEN[profile]
   } else {
     const trimmed = text.trimStart()
-    // Strip markdown code-fence prefix so that ```json … is detected as JSON
+    // 剥离 Markdown 代码围栏前缀，使 JSON 代码块能被正确识别。
     const strippedFence = trimmed.replace(/^\x60{3}\w*\s*\n?/, "")
     // jsonLike 判定统一基于 strippedFence，避免与 startsWith 的文本口径不一致。
-    const jsonLike = (strippedFence.startsWith("{") || strippedFence.startsWith("["))
-      && /"[^"]+"\s*:/.test(strippedFence)
-    const codeLike = !jsonLike
-      && /```|^import |^export |^function |^const |^let |^var |^class |^interface |^type |^def |^fn |^pub |^use |^mod |^package /m.test(text)
+    const jsonLike =
+      (strippedFence.startsWith("{") || strippedFence.startsWith("[")) &&
+      /"[^"]+"\s*:/.test(strippedFence)
+    const codeLike =
+      !jsonLike &&
+      /```|^import |^export |^function |^const |^let |^var |^class |^interface |^type |^def |^fn |^pub |^use |^mod |^package /m.test(
+        text,
+      )
 
-    asciiPerToken = jsonLike ? 3.7 : codeLike ? 3.7 : 3.3
+    asciiPerToken = jsonLike || codeLike ? ASCII_PER_TOKEN.code : 3.3
   }
   return Math.max(1, Math.ceil(ascii / asciiPerToken + cjk / 1.0 + han / 1.5))
 }

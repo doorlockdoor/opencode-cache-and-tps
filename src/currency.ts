@@ -1,13 +1,23 @@
-// ── currency helpers ──
+// ── 币种工具 ──
 import type { BalanceEntry } from "./balance-providers"
 
 const CURRENCIES: Record<string, string> = {
-  USD: "$", CNY: "¥", EUR: "€", JPY: "JP¥", GBP: "£", KRW: "₩",
+  USD: "$",
+  CNY: "¥",
+  EUR: "€",
+  JPY: "JP¥",
+  GBP: "£",
+  KRW: "₩",
 }
-/** Approximate USD exchange rates — used as defaults when switching currency.
- *  Users can override via /cache-rate.  Last updated 2026-05. */
+/** 切换币种时使用的默认美元参考汇率。
+ *  可通过 /cache-rate 覆盖；更新于 2026-05。 */
 const DEFAULT_RATES: Record<string, number> = {
-  USD: 1, CNY: 7.2, EUR: 0.92, JPY: 150, GBP: 0.79, KRW: 1350,
+  USD: 1,
+  CNY: 7.2,
+  EUR: 0.92,
+  JPY: 150,
+  GBP: 0.79,
+  KRW: 1350,
 }
 
 /**
@@ -38,7 +48,8 @@ function fmtCompact(n: number): string {
 function formatBalanceAmount(total: string): string {
   const n = parseFloat(total)
   if (!Number.isFinite(n)) return total
-  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (n === 0 || n >= 1)
+    return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }
 
@@ -52,14 +63,24 @@ function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): st
   const native = pref ? list.find((x) => x.currency === pref) : undefined
   if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
   const base = list[0]
+  if (!base) return ""
   const baseAmt = parseFloat(base.total)
   const converted = Number.isFinite(baseAmt)
     ? convertBalance(pref || base.currency, rate, baseAmt, base.currency)
     : baseAmt
-  const shown = pref && base.currency !== pref
-    ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-    : formatBalanceAmount(base.total)
+  const shown =
+    pref && base.currency !== pref
+      ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
+      : formatBalanceAmount(base.total)
   return balanceSymbol(pref || base.currency) + shown
 }
 
-export { CURRENCIES, DEFAULT_RATES, convertBalance, balanceSymbol, fmtCompact, formatBalanceAmount, formatBalanceText }
+export {
+  CURRENCIES,
+  DEFAULT_RATES,
+  convertBalance,
+  balanceSymbol,
+  fmtCompact,
+  formatBalanceAmount,
+  formatBalanceText,
+}

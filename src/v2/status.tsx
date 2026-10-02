@@ -1,16 +1,23 @@
 /** @jsxImportSource @opentui/solid */
 
-import { createMemo, onMount, Show, For } from "solid-js"
+import { createMemo, Show, For } from "solid-js"
 import type { Context } from "./types"
 import type { PanelApi, PanelSignals } from "../panel/panel-api"
-import { KV_PREFIX } from "../panel/panel-api"
 import { FALLBACK, MAX_SAT, desaturateTo } from "../ui"
 import { fmtCompact, formatBalanceText } from "../currency"
 import { createT } from "../i18n"
 import { mapTheme } from "./theme"
 import { computeLivePerf, lastPerfValues, hostTurnTps, currentModelKey } from "../perf"
 import { collectUsageBySession } from "../stats"
-import { createBusyTick, liveStatSegs, liveEnabled, anyLiveSegment, pushPerfSegs, createPerfRefreshTick, type StatSeg } from "../live"
+import {
+  createBusyTick,
+  liveStatSegs,
+  liveEnabled,
+  anyLiveSegment,
+  pushPerfSegs,
+  createPerfRefreshTick,
+  type StatSeg,
+} from "../live"
 
 /**
  * v2 底部状态栏（prompt.footer.status，append）：命中率(+趋势) · Tokens · 首字 · 速度 · 延迟 · 余额。
@@ -30,13 +37,6 @@ export function StatusView(props: {
 }) {
   const t = createT(() => props.signals.langCode())
   const sid = () => props.sessionID
-
-  onMount(() => {
-    try {
-      const v = props.api.kv.get<boolean>(`${KV_PREFIX}.section.bottom`, true)
-      props.signals.setSectionBottom(v !== false)
-    } catch {}
-  })
 
   const perfVersion = createPerfRefreshTick(props.api)
 
@@ -98,13 +98,25 @@ export function StatusView(props: {
     liveTick()
     const lv = computeLivePerf(props.api, sid())
     if (!lv) return []
-    return liveStatSegs(lv, t, pal().muted, pal().text, props.signals.style(), liveEnabled(props.signals))
+    return liveStatSegs(
+      lv,
+      t,
+      pal().muted,
+      pal().text,
+      props.signals.style(),
+      liveEnabled(props.signals),
+    )
   })
 
   const balanceText = createMemo(() => {
     const s = props.signals.balanceState()
-    if (s.status === "ok" && s.data) return formatBalanceText(s.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
-    if (s.status === "loading") return "\u2026"
+    if (s.status === "ok" && s.data)
+      return formatBalanceText(
+        s.data,
+        props.signals.balanceCurrency(),
+        props.signals.exchangeRate(),
+      )
+    if (s.status === "loading") return "…"
     if (s.status === "error") return "\u26a0"
     return "-"
   })
@@ -114,7 +126,9 @@ export function StatusView(props: {
     const plain = props.signals.style() === "min"
     const out: StatSeg[] = []
     // 段间分隔符：仅当已有内容时插入，避免关闭首段后出现前导「·」
-    const sep = () => { if (out.length) out.push({ text: " \u00b7 ", color: pal().muted }) }
+    const sep = () => {
+      if (out.length) out.push({ text: " · ", color: pal().muted })
+    }
     // 无数据（首页/新会话）时省略命中率段：宿主在所有 Prompt 下方渲染
     // footer.status，常驻「命中率 --」占位没有信息量（对齐上游 9ff55be 思路）
     if (props.signals.barShowHit() && s && s.hitRate >= 0) {
@@ -122,7 +136,11 @@ export function StatusView(props: {
       if (!plain) out.push({ text: t("barHit") + " ", color: pal().muted })
       out.push({ text: hr, color: hitColor() })
       const tr = trend()
-      if (tr !== null) out.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
+      if (tr !== null)
+        out.push({
+          text: " " + (tr > 0 ? "↑" : "↓") + Math.abs(tr).toFixed(1) + "%",
+          color: tr > 0 ? pal().success : pal().error,
+        })
     }
     if (props.signals.barShowTokens() && s) {
       const total = s.input + s.read + s.write
@@ -143,10 +161,18 @@ export function StatusView(props: {
     } else {
       const { sample, tps: sampleTps } = perfValues()
       // 体感模式取最近有效匹配回合；无值时回落输出速度。
-      const hostTps = props.signals.tpsMode() === "perceived" ? hostTurnTps(props.api, sid(), modelKey()) : null
+      const hostTps =
+        props.signals.tpsMode() === "perceived" ? hostTurnTps(props.api, sid(), modelKey()) : null
       pushPerfSegs(out, sep, {
-        style: props.signals.style(), t, sample, tps: hostTps ?? sampleTps, muted: pal().muted, text: pal().text,
-        ttft: props.signals.barShowTtft(), speed: props.signals.barShowSpeed(), lat: props.signals.barShowLat(),
+        style: props.signals.style(),
+        t,
+        sample,
+        tps: hostTps ?? sampleTps,
+        muted: pal().muted,
+        text: pal().text,
+        ttft: props.signals.barShowTtft(),
+        speed: props.signals.barShowSpeed(),
+        lat: props.signals.barShowLat(),
       })
     }
     if (props.signals.barShowBalance() && !props.signals.balanceUnsupported()) {

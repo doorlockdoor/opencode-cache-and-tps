@@ -1,6 +1,8 @@
 node_modules/
 dist/
-*.tsbuildinfo
-.sisyphus/
+assets/
+package-lock.json
 src/_version.ts
 .installer-test-*/
+README.md
+README_EN.md

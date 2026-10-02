@@ -1,17 +1,18 @@
 // ---------------------------------------------------------------------------
-// Balance providers — pluggable account-balance query adapters.
+// 余额供应商：可扩展的账户余额查询适配器。
 // ---------------------------------------------------------------------------
 
 /** 归一化后的余额条目——显示层与具体 provider 解耦。 */
 export interface BalanceEntry {
-  currency: string   // 原生币种（CNY/USD…），复用现有汇率换算
-  total: string      // 余额字符串
-  display?: string   // 非货币额度的预格式化显示文本
+  currency: string // 原生币种（CNY/USD…），复用现有汇率换算
+  total: string // 余额字符串
+  display?: string // 非货币额度的预格式化显示文本
   details?: BalanceDetail[]
 }
 
 /** 余额明细维度（各 provider 按能力取子集）。 */
-export type BalanceDetailKey = "plan" | "used" | "remaining" | "window" | "reset" | "codeReview" | "credits" | "resetCredits"
+export type BalanceDetailKey =
+  "plan" | "used" | "remaining" | "window" | "reset" | "codeReview" | "credits" | "resetCredits"
 
 /** 单条余额明细：维度 + 预格式化文本，可选配额窗口。 */
 export interface BalanceDetail {
@@ -25,9 +26,9 @@ export class BalanceError extends Error {}
 
 /** 可插拔的余额 provider 适配器。 */
 export interface BalanceProvider {
-  id: string                    // 唯一标识，同时用作 KV key 命名空间
-  name: string                  // 显示名（专有名词，无需 i18n）
-  keyPlaceholder?: string       // key 输入框占位（如 "sk-..."）
+  id: string // 唯一标识，同时用作 KV key 命名空间
+  name: string // 显示名（专有名词，无需 i18n）
+  keyPlaceholder?: string // key 输入框占位（如 "sk-..."）
   fetchBalance(apiKey: string, signal?: AbortSignal): Promise<BalanceEntry[]>
 }
 
@@ -46,7 +47,7 @@ const siliconflowProvider: BalanceProvider = {
       if (res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       status?: boolean
       data?: {
         balance?: string | number
@@ -75,9 +76,14 @@ const deepseekProvider: BalanceProvider = {
       if (res.status === 402 || res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       is_available?: boolean
-      balance_infos?: { currency: string; total_balance: string; granted_balance: string; topped_up_balance: string }[]
+      balance_infos?: {
+        currency: string
+        total_balance: string
+        granted_balance: string
+        topped_up_balance: string
+      }[]
     }
     const infos = json.balance_infos ?? []
     if (infos.length === 0) throw new BalanceError("EMPTY")
@@ -102,7 +108,7 @@ const openrouterProvider: BalanceProvider = {
       if (res.status === 401 || res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       data?: { total_credits?: number; total_usage?: number }
     }
     const credits = json.data?.total_credits
@@ -128,7 +134,7 @@ const moonshotProvider: BalanceProvider = {
       if (res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       data?: { available_balance?: string | number }
     }
     const balance = json.data?.available_balance
@@ -152,7 +158,7 @@ const hyperProvider: BalanceProvider = {
       if (res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as { balance?: string | number }
+    const json = (await res.json()) as { balance?: string | number }
     const balance = json.balance
     if (typeof balance === "undefined" || balance === null) throw new BalanceError("EMPTY")
     // hyper 积分换算：100 积分 = $5，即 1 积分 = $0.05
@@ -198,11 +204,18 @@ interface CodexRateWindow {
 }
 
 function asRecord(value: unknown): OpenAIRecord | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as OpenAIRecord : undefined
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as OpenAIRecord)
+    : undefined
 }
 
 function asFiniteNumber(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN
+  const number =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN
   return Number.isFinite(number) ? number : undefined
 }
 
@@ -231,8 +244,13 @@ function getPercentages(snapshot: OpenAIRecord): CodexPercentages | undefined {
   const limit = asFiniteNumber(snapshot.limit)
   const usedAmount = asFiniteNumber(snapshot.used)
   const remainingAmount = asFiniteNumber(snapshot.remaining)
-  if (limit !== undefined && limit > 0 && (usedAmount !== undefined || remainingAmount !== undefined)) {
-    const used = usedAmount !== undefined ? (usedAmount / limit) * 100 : 100 - (remainingAmount! / limit) * 100
+  if (
+    limit !== undefined &&
+    limit > 0 &&
+    (usedAmount !== undefined || remainingAmount !== undefined)
+  ) {
+    const used =
+      usedAmount !== undefined ? (usedAmount / limit) * 100 : 100 - (remainingAmount! / limit) * 100
     const remaining = remainingAmount !== undefined ? (remainingAmount / limit) * 100 : 100 - used
     return { used: clampPercent(used), remaining: clampPercent(remaining) }
   }
@@ -255,7 +273,8 @@ function getRateWindows(rateLimit: unknown): CodexRateWindow[] {
       const normalizedName = name.toLowerCase()
       if (normalizedName.includes("individual")) return undefined
       const windowSeconds = asFiniteNumber(data.limit_window_seconds)
-      const looksLikeWindow = normalizedName.includes("window") ||
+      const looksLikeWindow =
+        normalizedName.includes("window") ||
         windowSeconds !== undefined ||
         "used_percent" in data ||
         "remaining_percent" in data
@@ -263,7 +282,11 @@ function getRateWindows(rateLimit: unknown): CodexRateWindow[] {
       return { data, windowSeconds, order }
     })
     .filter((window): window is CodexRateWindow => window !== undefined)
-    .sort((a, b) => (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) - (b.windowSeconds ?? Number.MAX_SAFE_INTEGER) || a.order - b.order)
+    .sort(
+      (a, b) =>
+        (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) -
+          (b.windowSeconds ?? Number.MAX_SAFE_INTEGER) || a.order - b.order,
+    )
 }
 
 function getResetAfterSeconds(snapshot: OpenAIRecord, nowMs: number): number | undefined {
@@ -279,7 +302,11 @@ function getResetAfterSeconds(snapshot: OpenAIRecord, nowMs: number): number | u
   return undefined
 }
 
-function appendQuotaDetails(details: BalanceDetail[], percentages: CodexPercentages, windowSeconds?: number): void {
+function appendQuotaDetails(
+  details: BalanceDetail[],
+  percentages: CodexPercentages,
+  windowSeconds?: number,
+): void {
   const scope = windowSeconds === undefined ? {} : { windowSeconds }
   details.push({ key: "used", value: `${formatPercent(percentages.used)}%`, ...scope })
   details.push({ key: "remaining", value: `${formatPercent(percentages.remaining)}%`, ...scope })
@@ -316,7 +343,8 @@ export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry
   }
 
   const spendControl = asRecord(asRecord(json.spend_control)?.individual_limit)
-  const individualLimit = asRecord(json.individual_limit) ?? asRecord(rateLimit?.individual_limit) ?? spendControl
+  const individualLimit =
+    asRecord(json.individual_limit) ?? asRecord(rateLimit?.individual_limit) ?? spendControl
   const individualPercentages = individualLimit ? getPercentages(individualLimit) : undefined
   if (individualPercentages) {
     remainingValues.push(individualPercentages.remaining)
@@ -330,7 +358,10 @@ export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry
   const codeReviewWindow = asRecord(asRecord(json.code_review_rate_limit)?.primary_window)
   const codeReviewUsed = asFiniteNumber(codeReviewWindow?.used_percent)
   if (codeReviewUsed !== undefined) {
-    details.push({ key: "codeReview", value: `${formatPercent(clampPercent(100 - codeReviewUsed))}%` })
+    details.push({
+      key: "codeReview",
+      value: `${formatPercent(clampPercent(100 - codeReviewUsed))}%`,
+    })
   }
 
   const credits = asRecord(json.credits)
@@ -357,18 +388,23 @@ export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry
   const resetCredits = asFiniteNumber(asRecord(json.rate_limit_reset_credits)?.available_count)
   if (resetCredits !== undefined) details.push({ key: "resetCredits", value: String(resetCredits) })
 
-  if (details.length === 0 || (!hasRateQuota && !individualPercentages && !hasCreditDetail && resetCredits === undefined)) {
+  if (
+    details.length === 0 ||
+    (!hasRateQuota && !individualPercentages && !hasCreditDetail && resetCredits === undefined)
+  ) {
     throw new BalanceError("EMPTY")
   }
 
   const summaryRemaining = remainingValues.length > 0 ? Math.min(...remainingValues) : undefined
   const summary = summaryRemaining === undefined ? undefined : formatPercent(summaryRemaining)
-  return [{
-    currency: "CODEX",
-    total: summary === undefined ? "0" : `${summary}%`,
-    display: summary === undefined ? "Codex" : `Codex ${summary}%`,
-    details,
-  }]
+  return [
+    {
+      currency: "CODEX",
+      total: summary === undefined ? "0" : `${summary}%`,
+      display: summary === undefined ? "Codex" : `Codex ${summary}%`,
+      details,
+    },
+  ]
 }
 
 const openaiProvider: BalanceProvider = {
@@ -380,7 +416,8 @@ const openaiProvider: BalanceProvider = {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
       Referer: "https://chatgpt.com/",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
       "OpenAI-Beta": "codex-1",
       "oai-language": "zh-CN",
       originator: "Codex Desktop",
@@ -400,7 +437,14 @@ const openaiProvider: BalanceProvider = {
 }
 
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider, openaiProvider]
+export const balanceProviders: BalanceProvider[] = [
+  deepseekProvider,
+  siliconflowProvider,
+  openrouterProvider,
+  moonshotProvider,
+  hyperProvider,
+  openaiProvider,
+]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {

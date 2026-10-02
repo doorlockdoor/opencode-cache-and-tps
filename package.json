@@ -40,14 +40,19 @@
     "test:perf": "tsx tests/perf.test.ts",
     "test:dist": "tsx tests/dist.test.ts",
     "test:util": "tsx tests/util.test.ts",
-    "test:v2": "tsx tests/v2-messages.test.ts",
+    "test:v2": "node --conditions=browser --import tsx tests/v2-messages.test.ts",
     "test:bar": "tsx tests/bar-items.test.ts",
     "test:balance-auto": "tsx tests/balance.test.ts",
     "test:commands": "tsx tests/commands-shared.test.ts",
     "test:credentials": "tsx tests/credentials.test.ts",
-    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util && npm run test:v2 && npm run test:bar && npm run test:balance-auto && npm run test:commands && npm run test:credentials",
-    "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\r\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\r\\n')\"",
-    "prepublishOnly": "npm run build"
+    "test": "npm run test:balance && npm run test:perf && npm run test:dist && npm run test:util && npm run test:v2 && npm run test:bar && npm run test:balance-auto && npm run test:commands && npm run test:credentials && npm run test:balance-controller && npm run test:install",
+    "version": "node scripts/gen-version.mjs",
+    "prepublishOnly": "npm run check",
+    "test:balance-controller": "tsx tests/balance-controller.test.ts",
+    "test:install": "node tests/install.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "opencode",
@@ -99,7 +104,11 @@
     "@types/node": "^26.4.0",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.5.0",
+    "prettier": "^3.9.9",
     "tsx": "^4.22.3",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }

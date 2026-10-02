@@ -31,7 +31,12 @@ export interface PanelSession {
   title?: string
   agent?: string
   model?: { providerID?: string; id?: string }
-  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+  tokens?: {
+    input?: number
+    output?: number
+    reasoning?: number
+    cache?: { read?: number; write?: number }
+  }
   cost?: number
   [key: string]: unknown
 }
@@ -69,10 +74,11 @@ export interface BalanceState {
   data: BalanceEntry[] | null
   lastFetch: number
   error?: string
+  providerID?: string
   key?: string // 上次成功/尝试查询所用的 key，用于检测 key 是否更换
 }
 
-/** Signals shared between the panel component and slash commands. */
+/** 面板与斜杠命令共用的信号。 */
 export interface PanelSignals {
   currencySymbol: () => string
   setCurrencySymbol: (v: string) => void
@@ -101,7 +107,7 @@ export interface PanelSignals {
   setTpsMode: (v: TpsMode) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
-  /** Bottom status bar (prompt hint line) visibility. */
+  /** 底部状态栏（输入提示行）的显示开关。 */
   sectionBottom: () => boolean
   setSectionBottom: (v: boolean) => void
   /**
@@ -124,29 +130,29 @@ export interface PanelSignals {
   setBarShowTool: (v: boolean) => void
   barShowBalance: () => boolean
   setBarShowBalance: (v: boolean) => void
-  /** Increment to force a balance re-fetch. */
+  /** 递增以强制重新查询余额。 */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void
-  /** Currently selected balance provider id (e.g. "deepseek"). */
+  /** 当前选中的余额供应商 ID，例如 deepseek。 */
   balanceProviderId: () => string
   setBalanceProviderId: (v: string) => void
-  /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
+  /** 自动跟随会话供应商显示余额；手动切换时关闭。 */
   autoBalance: () => boolean
   setAutoBalance: (v: boolean) => void
-  /** True when the session's provider has no balance adapter (auto mode). Suppresses balance polling. */
+  /** 自动模式下，会话供应商无余额适配器时设为 true，并停止轮询。 */
   balanceUnsupported: () => boolean
   setBalanceUnsupported: (v: boolean) => void
-  /** Shared balance query state — single source of truth for sidebar and bottom bar. */
+  /** 侧栏与底栏共用的余额查询状态。 */
   balanceState: () => BalanceState
-  /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
+  /** 余额显示的首选币种（CNY / USD 等）；空值时使用第一项。 */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
   borderVisible: () => boolean
   setBorderVisible: (v: boolean) => void
-  /** When set, the panel renders stats for this session instead of the main one. */
+  /** 设置后显示指定会话的统计，替代主会话。 */
   overrideSessionId: () => string | undefined
   setOverrideSessionId: (v: string | undefined) => void
-  /** True while our sidebar panel is mounted — host sidebar is visible. */
+  /** 插件侧栏挂载时为 true，表示宿主侧栏可见。 */
   sidebarVisible: () => boolean
   setSidebarVisible: (v: boolean) => void
 }

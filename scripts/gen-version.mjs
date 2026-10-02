@@ -1,11 +1,8 @@
-// Generates src/_version.ts when missing (gitignored; the "version" npm
-// script rewrites it with the real version on release). All tsc passes
-// consume it, so this must run before any tsc on a fresh clone.
+// 同步生成的版本信息；内容未变化时不重写文件。
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 const file = resolve("src/_version.ts")
-if (!existsSync(file)) {
-  const pkg = JSON.parse(readFileSync("package.json", "utf-8"))
-  writeFileSync(file, `// auto-generated\r\nexport const PLUGIN_VERSION=${JSON.stringify(pkg.version)};\r\n`)
-}
+const pkg = JSON.parse(readFileSync("package.json", "utf-8"))
+const content = `// 自动生成，请勿手动修改\r\nexport const PLUGIN_VERSION = ${JSON.stringify(pkg.version)}\r\n`
+if (!existsSync(file) || readFileSync(file, "utf8") !== content) writeFileSync(file, content)

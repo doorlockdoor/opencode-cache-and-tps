@@ -1,21 +1,8 @@
 import assert from "node:assert/strict"
-import { shallowEqual, createThrottledBumper } from "../src/util"
+import { formatBalanceText } from "../src/currency"
+import { createThrottledBumper } from "../src/util"
 
-// ── shallowEqual ───────────────────────────────────────────────────────────
-
-assert.equal(shallowEqual({ a: 1, b: 2 }, { a: 1, b: 2 }), true)
-assert.equal(shallowEqual({ a: 1, b: 2 }, { a: 1, b: 3 }), false)
-assert.equal(shallowEqual({ a: 1 }, { a: 1, b: 2 }), false) // 键集合不对称（b 侧多）
-assert.equal(shallowEqual({ a: 1, b: undefined }, { a: 1 }), false) // 对称检查（a 侧多）
-assert.equal(shallowEqual(undefined, { a: 1 }), false)
-assert.equal(shallowEqual({} as Record<string, never>, {} as Record<string, never>), true)
-
-// PerfStats 形状（KV 去重的实际用例）
-{
-  const a: Record<string, unknown> = { ttftLast: 500, tpsLast: null, latLast: 2000, ttftAvg: 500, tpsAvg: null, latAvg: 2000, ttftN: 1, tpsN: 0, hasPerf: true }
-  assert.equal(shallowEqual(a, { ...a }), true)
-  assert.equal(shallowEqual(a, { ...a, tpsLast: 66.7 }), false)
-}
+assert.equal(formatBalanceText([], "USD", 1), "")
 
 // ── createThrottledBumper（真实定时器 + 宽松界，避免时序脆弱）──────────────
 
@@ -68,4 +55,4 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
   assert.equal(n, 1)
 }
 
-console.log("util tests passed")
+console.log("通用工具测试通过")

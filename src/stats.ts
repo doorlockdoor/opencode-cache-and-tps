@@ -29,39 +29,62 @@ export interface UsageStats {
  *   read / (input + read + write)），返回 -1 表示无数据。
  */
 export function collectUsage(msgs: readonly any[], session: PanelSession | undefined): UsageStats {
-  let input  = num(session?.tokens?.input)
-  let read   = num(session?.tokens?.cache?.read)
-  let write  = num(session?.tokens?.cache?.write)
+  let input = num(session?.tokens?.input)
+  let read = num(session?.tokens?.cache?.read)
+  let write = num(session?.tokens?.cache?.write)
   let output = num(session?.tokens?.output)
-  let cost   = num(session?.cost)
-  let pid    = session?.model?.providerID ?? ""
-  let mid    = session?.model?.id ?? ""
+  let cost = num(session?.cost)
+  let pid = session?.model?.providerID ?? ""
+  let mid = session?.model?.id ?? ""
 
   const fallbackTokens = session?.tokens == null
-  const fallbackCost   = session?.cost == null
-  const fallbackModel  = !pid || !mid
+  const fallbackCost = session?.cost == null
+  const fallbackModel = !pid || !mid
 
-  let prev = -1, last = -1
+  let prev = -1,
+    last = -1
   for (const msg of msgs) {
     if (msg.role !== "assistant") continue
     const tk = (msg as AssistantMessage).tokens
     if (!tk) continue
     const mit = num(tk.input) + num(tk.cache?.read) + num(tk.cache?.write)
-    if (mit > 0) { prev = last; last = (num(tk.cache?.read) / mit) * 100 }
+    if (mit > 0) {
+      prev = last
+      last = (num(tk.cache?.read) / mit) * 100
+    }
     if (fallbackTokens) {
-      input += num(tk.input); read += num(tk.cache?.read); write += num(tk.cache?.write); output += num(tk.output)
+      input += num(tk.input)
+      read += num(tk.cache?.read)
+      write += num(tk.cache?.write)
+      output += num(tk.output)
     }
     if (fallbackCost) cost += num((msg as AssistantMessage).cost)
-    if (fallbackModel && (msg as AssistantMessage).providerID && (msg as AssistantMessage).modelID) {
+    if (
+      fallbackModel &&
+      (msg as AssistantMessage).providerID &&
+      (msg as AssistantMessage).modelID
+    ) {
       pid = (msg as AssistantMessage).providerID
       mid = (msg as AssistantMessage).modelID
     }
   }
-  return { hitRate: last, prevHitRate: prev, hasTrend: prev >= 0 && last >= 0, input, read, write, output, cost, providerID: pid, modelID: mid }
+  return {
+    hitRate: last,
+    prevHitRate: prev,
+    hasTrend: prev >= 0 && last >= 0,
+    input,
+    read,
+    write,
+    output,
+    cost,
+    providerID: pid,
+    modelID: mid,
+  }
 }
 
 /** 便捷版：从 api 读取会话与消息后汇总（底栏使用）。 */
 export function collectUsageBySession(api: PanelApi, sessionId: string): UsageStats {
-  const session = typeof api.state.session.get === "function" ? api.state.session.get(sessionId) : undefined
+  const session =
+    typeof api.state.session.get === "function" ? api.state.session.get(sessionId) : undefined
   return collectUsage(api.state.session.messages(sessionId), session)
 }

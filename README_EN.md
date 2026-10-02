@@ -31,14 +31,14 @@ For v2, edit `~/.config/opencode/cli.json` and add the package name.
 
 ```jsonc
 {
-    "plugins": [
-        {
-            "package": "opencode-cache-and-tps@latest",
-            "options": {
-                "enabled": true
-            }
-        }
-    ]
+  "plugins": [
+    {
+      "package": "opencode-cache-and-tps@latest",
+      "options": {
+        "enabled": true
+      }
+    }
+  ]
 }
 ```
 
@@ -46,13 +46,12 @@ For v1, edit `~/.config/opencode/tui.json` and add the package name.
 
 ```jsonc
 {
-    "$schema": "https://opencode.ai/tui.json",
-    "plugin": [
-        // ...
-        "opencode-cache-and-tps@latest"
-    ]
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    // ...
+    "opencode-cache-and-tps@latest"
+  ]
 }
-
 ```
 
 Troubleshooting: if the plugin conflicts or misbehaves, clear the cache and restart opencode in a clean state, then narrow down the cause step by step. The v2 cache is at `~/.cache/opencode/npm`; the v1 cache is at `~/.cache/opencode/packages`.
@@ -69,11 +68,11 @@ Edit `~/.config/opencode/package.json` to add the dependency.
 
 ```jsonc
 {
-    "type": "module",
-    "dependencies": {
-        // ...
-        "@opentui/solid": "^0.5.1"
-    }
+  "type": "module",
+  "dependencies": {
+    // ...
+    "@opentui/solid": "^0.5.1"
+  }
 }
 ```
 
@@ -81,11 +80,11 @@ For v1 you also need to edit `~/.config/opencode/tui.json` to add the local TUI 
 
 ```jsonc
 {
-    "$schema": "https://opencode.ai/tui.json",
-    "plugin": [
-        // ...
-        "./plugins/opencode-cache-and-tps/dist/tui.js"
-    ]
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    // ...
+    "./plugins/opencode-cache-and-tps/dist/tui.js"
+  ]
 }
 ```
 

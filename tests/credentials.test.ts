@@ -8,7 +8,9 @@ import {
 
 // oauth（OpenAI / Google 等）→ access token
 assert.equal(
-  credentialToken(parseCredentialValue(JSON.stringify({ type: "oauth", access: "eyJ.token", refresh: "r" }))),
+  credentialToken(
+    parseCredentialValue(JSON.stringify({ type: "oauth", access: "eyJ.token", refresh: "r" })),
+  ),
   "eyJ.token",
 )
 
@@ -34,10 +36,13 @@ assert.equal(credentialToken({ type: "oauth" }), "")
 
 // 库路径解析：OPENCODE_DB 优先，其次 XDG_DATA_HOME，最后 ~/.local/share
 assert.equal(findCredentialDbPath({ HOME: "/h" }, "/h"), "/h/.local/share/opencode/opencode.db")
-assert.equal(findCredentialDbPath({ HOME: "/h", XDG_DATA_HOME: "/x" }, "/h"), "/x/opencode/opencode.db")
+assert.equal(
+  findCredentialDbPath({ HOME: "/h", XDG_DATA_HOME: "/x" }, "/h"),
+  "/x/opencode/opencode.db",
+)
 assert.equal(findCredentialDbPath({ HOME: "/h", OPENCODE_DB: "/custom/db" }, "/h"), "/custom/db")
 
 // Node 环境（bun:sqlite 不可用）：解析静默回退，不抛异常
 assert.equal(resolveCredentialToken("provider-que-nao-existe"), "")
 
-console.log("V2 credential resolution tests passed")
+console.log("V2 凭据解析测试通过")

@@ -1,35 +1,46 @@
 import assert from "node:assert/strict"
 import { estimateTokens, num } from "../src/tokens"
-import { computePerfSample, computeLivePerf, aggregatePerf, aggregateHostTps, modelKeyOf, currentModelKey, hostTurnTps, lastPerfValues, passesTpsGate, type PerfGateInputs } from "../src/perf"
+import {
+  computePerfSample,
+  computeLivePerf,
+  aggregatePerf,
+  aggregateHostTps,
+  modelKeyOf,
+  currentModelKey,
+  hostTurnTps,
+  lastPerfValues,
+  passesTpsGate,
+  type PerfGateInputs,
+} from "../src/perf"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
 
-// ── estimateTokens ─────────────────────────────────────────────────────────
+// ── token 估算 ─────────────────────────────────────────────────────────
 
 assert.equal(estimateTokens(""), 0)
-assert.equal(estimateTokens("hello"), 2) // 5 ASCII / 3.3 → ceil 2
+assert.equal(estimateTokens("hello"), 2) // 5 个 ASCII 字符，向上取整为 2 个 token
 assert.equal(estimateTokens("你好"), 2) // 2 汉字 / 1.5 → ceil 2
 assert.equal(estimateTokens("你好世界"), 3) // 4 汉字 / 1.5 → ceil 3
 assert.equal(estimateTokens("你好abc"), 3) // 2 汉字/1.5 + 3 ASCII/3.3 → ceil 3
 assert.equal(estimateTokens("かな"), 2) // 假名按 1 字/token（与汉字区分）
 assert.equal(estimateTokens("{}"), 1) // 无 "key": 不判 JSON，按 prose 2/3.3 → 1
-assert.equal(estimateTokens('{"a":1}'), 2) // JSON：7 ASCII / 3.7 → 2
-assert.equal(estimateTokens("import x from 'y'"), 5) // code：17 ASCII / 3.7 → 5
+assert.equal(estimateTokens('{"a":1}'), 2) // JSON：7 个 ASCII 字符 / 3.7 → 2
+assert.equal(estimateTokens("import x from 'y'"), 5) // 代码：17 个 ASCII 字符 / 3.7 → 5
 // profile 分档：reasoning("thinking") / text("answer") / tool("code")
-assert.equal(estimateTokens("hello world", "thinking"), 3) // 11 ASCII / 4.0 → 3
-assert.equal(estimateTokens("hello world", "answer"), 4) // 11 ASCII / 3.0 → 4
+assert.equal(estimateTokens("hello world", "thinking"), 3) // 推理：11 个 ASCII 字符 / 4.0 → 3
+assert.equal(estimateTokens("hello world", "answer"), 4) // 答案：11 个 ASCII 字符 / 2.9 → 4
 assert.equal(estimateTokens("你好abc", "answer"), 3) // 2/1.5 + 3/3.0 → 3
 assert.equal(estimateTokens('{"cmd":"x"}', "code"), 3) // code 档不检测形态，11 ASCII / 3.7 → 3
 
-// ── num ────────────────────────────────────────────────────────────────────
+// ── 有限数值处理 ────────────────────────────────────────────────────────────────────
 
 assert.equal(num(1.5), 1.5)
 assert.equal(num(NaN), 0)
 assert.equal(num("3"), 0)
 assert.equal(num(undefined), 0)
 
-// ── computePerfSample helpers ──────────────────────────────────────────────
+// ── 性能样本测试辅助函数 ──────────────────────────────────────────────
 
 function am(overrides: Record<string, unknown> = {}): AssistantMessage {
   return {
@@ -50,11 +61,25 @@ function am(overrides: Record<string, unknown> = {}): AssistantMessage {
 }
 
 function textPart(start: number, text = "x", end?: number): Part {
-  return { id: "t", sessionID: "s1", messageID: "m1", type: "text", text, time: { start, ...(end !== undefined ? { end } : {}) } } as unknown as Part
+  return {
+    id: "t",
+    sessionID: "s1",
+    messageID: "m1",
+    type: "text",
+    text,
+    time: { start, ...(end !== undefined ? { end } : {}) },
+  } as unknown as Part
 }
 
 function reasoningPart(start: number, text = "x"): Part {
-  return { id: "r", sessionID: "s1", messageID: "m1", type: "reasoning", text, time: { start } } as unknown as Part
+  return {
+    id: "r",
+    sessionID: "s1",
+    messageID: "m1",
+    type: "reasoning",
+    text,
+    time: { start },
+  } as unknown as Part
 }
 
 function toolPart(start: number, end: number, raw?: string): Part {
@@ -69,7 +94,7 @@ function toolPart(start: number, end: number, raw?: string): Part {
   } as unknown as Part
 }
 
-// ── computePerfSample tests ────────────────────────────────────────────────
+// ── 性能样本测试 ────────────────────────────────────────────────
 
 const basic = computePerfSample(am(), [textPart(1500)])!
 assert.equal(basic.ttft, 500)
@@ -103,7 +128,10 @@ assert.ok(Math.abs(hiddenReasoningParam.tps! - 75 / 0.5) < 1e-9) // 工具窗口
 // 在 gap 100ms 内整块到达 → 隐含 5000 tok/s ≥ 5×50 → 命中：分子 = 600−500 = 100
 const bufferedGate: PerfGateInputs = { genTok: 0, genMs: 0 }
 const bufferedStep = computePerfSample(
-  am({ time: { created: 1000, completed: 5000 }, tokens: { input: 10, output: 600, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 5000 },
+    tokens: { input: 10, output: 600, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500, "a".repeat(290), 3500), toolPart(3600, 4000, "a".repeat(1850))],
   bufferedGate,
 )!
@@ -114,21 +142,30 @@ assert.equal(passesTpsGate(bufferedGate.genTok, bufferedGate.genMs, 300, 40), fa
 
 // 对照：同样参数量但 gap 900ms（真实流式）→ 保持全量口径 600/3.1
 const streamedStep = computePerfSample(
-  am({ time: { created: 1000, completed: 5000 }, tokens: { input: 10, output: 600, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 5000 },
+    tokens: { input: 10, output: 600, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500, "a".repeat(290), 3500), toolPart(4400, 4800, "a".repeat(1850))],
 )!
 assert.ok(Math.abs(streamedStep.tps! - 600 / 3.1) < 1e-9)
 
 // 隐藏思考 + 整包参数叠加：分子 = output − 参数（思考已剔、参数再剔）
 const comboStep = computePerfSample(
-  am({ time: { created: 1000, completed: 5000 }, tokens: { input: 10, output: 600, reasoning: 3000, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 5000 },
+    tokens: { input: 10, output: 600, reasoning: 3000, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500, "a".repeat(290), 3500), toolPart(3600, 4000, "a".repeat(1850))],
 )!
 assert.ok(Math.abs(comboStep.tps! - 100 / 3.1) < 1e-9)
 
 // 工具区间扣除
 const withTool = computePerfSample(
-  am({ time: { created: 1000, completed: 4000 }, tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 4000 },
+    tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500), toolPart(2000, 3000)],
 )!
 assert.equal(withTool.ttft, 500)
@@ -137,22 +174,41 @@ assert.ok(Math.abs(withTool.tps! - 100) < 1e-9) // 150 / 1500ms
 
 // 全量口径：工具参数不再从分子扣除（output 含 tool_use 参数 JSON；150 tok / 1500ms）
 const withParam = computePerfSample(
-  am({ time: { created: 1000, completed: 4000 }, tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 4000 },
+    tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500), toolPart(2000, 3000, "a".repeat(37))],
 )!
 assert.ok(Math.abs(withParam.tps! - 150 / 1.5) < 1e-9)
 
 // 参数经 state.input 序列化存在时同样不影响分子（150 / 1500ms）
 const withInput = computePerfSample(
-  am({ time: { created: 1000, completed: 4000 }, tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
-  [textPart(1500), { ...toolPart(2000, 3000), state: { status: "completed", time: { start: 2000, end: 3000 }, input: { content: "x".repeat(74) } } } as unknown as Part],
+  am({
+    time: { created: 1000, completed: 4000 },
+    tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
+  [
+    textPart(1500),
+    {
+      ...toolPart(2000, 3000),
+      state: {
+        status: "completed",
+        time: { start: 2000, end: 3000 },
+        input: { content: "x".repeat(74) },
+      },
+    } as unknown as Part,
+  ],
 )!
 assert.ok(Math.abs(withInput.tps! - 150 / 1.5) < 1e-9)
 
 // 真实流语义：参数在 [text.start, tool.start] 无时间戳段生成（不在工具窗口内），
 // 工具窗口 [2600,3000] 为纯执行 → genMs = 4000−1500−400 = 2100；150 / 2.1 ≈ 71.4
 const realWindow = computePerfSample(
-  am({ time: { created: 1000, completed: 4000 }, tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 4000 },
+    tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500), toolPart(2600, 3000, "a".repeat(37))],
 )!
 assert.equal(realWindow.ttft, 500)
@@ -161,14 +217,20 @@ assert.ok(Math.abs(realWindow.tps! - 150 / 2.1) < 1e-9)
 
 // 并行重叠工具区间去重
 const overlapping = computePerfSample(
-  am({ time: { created: 1000, completed: 4000 }, tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 4000 },
+    tokens: { input: 10, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1500), toolPart(2000, 3000), toolPart(2500, 3500)],
 )!
 assert.equal(overlapping.latency, 1500) // 合并后工具窗口 1500ms，4000-1000-1500
 
 // 缓冲网关 → tps null（ttft/latency 仍有值）
 const buffered = computePerfSample(
-  am({ time: { created: 1000, completed: 1005 }, tokens: { input: 10, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  am({
+    time: { created: 1000, completed: 1005 },
+    tokens: { input: 10, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+  }),
   [textPart(1001)],
 )!
 assert.equal(buffered.tps, null)
@@ -177,16 +239,27 @@ assert.equal(buffered.latency, 5)
 
 // 不计入样本的各类情况
 assert.equal(computePerfSample(am({ summary: true }), [textPart(1500)]), null)
-assert.equal(computePerfSample(am({ error: { name: "UnknownError", data: { message: "x" } } }), [textPart(1500)]), null)
-assert.equal(computePerfSample(am({ tokens: { input: 10, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }), [textPart(1500)]), null)
+assert.equal(
+  computePerfSample(am({ error: { name: "UnknownError", data: { message: "x" } } }), [
+    textPart(1500),
+  ]),
+  null,
+)
+assert.equal(
+  computePerfSample(
+    am({ tokens: { input: 10, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    [textPart(1500)],
+  ),
+  null,
+)
 assert.equal(computePerfSample(am(), [toolPart(2000, 3000)]), null) // 无内容 part
-assert.equal(computePerfSample(am(), [textPart(1000)]), null) // firstStart <= created
+assert.equal(computePerfSample(am(), [textPart(1000)]), null) // 首字时间不晚于创建时间，样本无效
 
 // 小步噪声守卫（genMs < MIN_GEN_MS）：旧口径此类步虚高至 1500+，现 TPS 记 null（ttft/latency 保留）
-const tinyStep = computePerfSample(
-  am({ time: { created: 1000, completed: 1223 } }),
-  [textPart(1100), toolPart(1150, 1200)],
-)!
+const tinyStep = computePerfSample(am({ time: { created: 1000, completed: 1223 } }), [
+  textPart(1100),
+  toolPart(1150, 1200),
+])!
 assert.equal(tinyStep.tps, null)
 assert.equal(tinyStep.ttft, 100)
 assert.equal(tinyStep.latency, 173)
@@ -206,8 +279,12 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
 
 // 两条有效样本 → 中位数（偶数取中间两值平均）
 {
-  const m1 = am() // ttft 500 / tps 66.7 / lat 2000
-  const m2 = am({ id: "m2", time: { created: 5000, completed: 6000 }, tokens: { input: 5, output: 200, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const m1 = am() // 首字 500ms / 速度 66.7 token/s / 延迟 2000ms
+  const m2 = am({
+    id: "m2",
+    time: { created: 5000, completed: 6000 },
+    tokens: { input: 5, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
   const api = makeApi({
     messages: () => [],
     parts: (mid) => (mid === "m1" ? [textPart(1500)] : mid === "m2" ? [textPart(5500)] : []),
@@ -216,7 +293,7 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
   assert.equal(perf.ttftN, 2)
   assert.equal(perf.ttftMed, 500)
   assert.equal(perf.tpsN, 2)
-  assert.ok(Math.abs(perf.tpsMed! - (100 / 1.5 + 400) / 2) < 1e-9) // m2: 200 tok / 500ms
+  assert.ok(Math.abs(perf.tpsMed! - (100 / 1.5 + 400) / 2) < 1e-9) // 第二条消息：200 token / 500ms
   assert.equal(perf.tpsLast, 400)
   assert.equal(perf.latLast, 1000)
   assert.equal(perf.hasPerf, true)
@@ -225,9 +302,21 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
 // 三条样本 → 中位数 ≠ 均值（60/120/300 → 中位 120，均值 180）
 {
   const msgs = [
-    am({ id: "a", time: { created: 1000, completed: 1600 }, tokens: { input: 1, output: 30, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "b", time: { created: 2000, completed: 2600 }, tokens: { input: 1, output: 60, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 150, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    am({
+      id: "a",
+      time: { created: 1000, completed: 1600 },
+      tokens: { input: 1, output: 30, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+    am({
+      id: "b",
+      time: { created: 2000, completed: 2600 },
+      tokens: { input: 1, output: 60, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+    am({
+      id: "c",
+      time: { created: 3000, completed: 3600 },
+      tokens: { input: 1, output: 150, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
   ]
   const api = makeApi({
     messages: () => [],
@@ -245,7 +334,11 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
 {
   const valid = am()
   const skipped = am({ id: "m2", summary: true })
-  const buffered = am({ id: "m3", time: { created: 1000, completed: 1005 }, tokens: { input: 1, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const buffered = am({
+    id: "m3",
+    time: { created: 1000, completed: 1005 },
+    tokens: { input: 1, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
   const api = makeApi({
     messages: () => [],
     parts: (mid) => (mid === "m1" ? [textPart(1500)] : mid === "m3" ? [textPart(1001)] : []),
@@ -258,7 +351,7 @@ assert.equal(bigParam.latency, 1000) // 3000−1000−1000
   assert.equal(perf.hasPerf, true)
 }
 
-// ── model filter helpers ───────────────────────────────────────────────────
+// ── 模型过滤辅助函数 ───────────────────────────────────────────────────
 
 // 同一 modelID 走不同 provider 视为不同模型（速度差异可能数倍）
 assert.equal(modelKeyOf(am()), "prov/model")
@@ -276,10 +369,11 @@ assert.ok(modelKeyOf(am({ providerID: "" })) === null)
   assert.equal(currentModelKey(api, "s1"), "p/new-m")
   // session.model 缺失 → 回退最后一条 assistant 消息
   const api2 = makeApi({
-    messages: () => [
-      am({ id: "old", modelID: "old-m", providerID: "p" }),
-      am({ id: "new", modelID: "new-m", providerID: "p", summary: true }),
-    ] as unknown as Message[],
+    messages: () =>
+      [
+        am({ id: "old", modelID: "old-m", providerID: "p" }),
+        am({ id: "new", modelID: "new-m", providerID: "p", summary: true }),
+      ] as unknown as Message[],
     parts: () => [],
     get: () => undefined,
   })
@@ -296,10 +390,30 @@ assert.ok(modelKeyOf(am({ providerID: "" })) === null)
 // aggregatePerf 按模型过滤：混合模型会话中位数/最近值只来自目标模型
 {
   const msgs = [
-    am({ id: "a", time: { created: 1000, completed: 1600 }, tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "b", time: { created: 2000, completed: 2600 }, tokens: { input: 1, output: 200, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    am({ id: "c", time: { created: 3000, completed: 3600 }, tokens: { input: 1, output: 250, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" }),
-    am({ id: "d", time: { created: 4000, completed: 4600 }, tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" }),
+    am({
+      id: "a",
+      time: { created: 1000, completed: 1600 },
+      tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+    am({
+      id: "b",
+      time: { created: 2000, completed: 2600 },
+      tokens: { input: 1, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+    am({
+      id: "c",
+      time: { created: 3000, completed: 3600 },
+      tokens: { input: 1, output: 250, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: "fast",
+      providerID: "p",
+    }),
+    am({
+      id: "d",
+      time: { created: 4000, completed: 4600 },
+      tokens: { input: 1, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: "fast",
+      providerID: "p",
+    }),
   ]
   const api = makeApi({
     messages: () => [],
@@ -328,7 +442,7 @@ assert.ok(modelKeyOf(am({ providerID: "" })) === null)
   assert.equal(none.ttftLast, null)
 }
 
-// ── computeLivePerf helpers ────────────────────────────────────────────────
+// ── 流式性能测试辅助函数 ────────────────────────────────────────────────
 
 interface ApiOpts {
   status?: (sid: string) => { type: string } | undefined
@@ -352,11 +466,18 @@ function makeApi(opts: ApiOpts): TuiPluginApi {
 
 // V1 底栏：最新样本仍提供首字/延迟；速度跳过该步的 null，取侧边栏同一个 tpsLast。
 {
-  const latest = am({ id: "new", time: { created: 4000, completed: 4250 }, tokens: { input: 1, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } })
-  const earlier = am({ id: "old", tokens: { input: 1, output: 300, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const latest = am({
+    id: "new",
+    time: { created: 4000, completed: 4250 },
+    tokens: { input: 1, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  const earlier = am({
+    id: "old",
+    tokens: { input: 1, output: 300, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
   const api = makeApi({
     messages: () => [earlier, latest] as Message[],
-    parts: (mid) => mid === "new" ? [textPart(4100)] : [textPart(1500)],
+    parts: (mid) => (mid === "new" ? [textPart(4100)] : [textPart(1500)]),
   })
   const values = lastPerfValues(api, "s1")
   assert.equal(values.sample?.ttft, 100)
@@ -371,7 +492,10 @@ function makeApi(opts: ApiOpts): TuiPluginApi {
   assert.deepEqual(lastPerfValues(api, "s1", "prov/other"), { sample: null, tps: null })
   assert.equal(lastPerfValues(api, "s1", "prov/model").tps, 200)
   const otherModel = am({ ...latest, modelID: "other" })
-  const mixed = makeApi({ messages: () => [earlier, otherModel] as Message[], parts: (mid) => mid === "new" ? [textPart(4100)] : [textPart(1500)] })
+  const mixed = makeApi({
+    messages: () => [earlier, otherModel] as Message[],
+    parts: (mid) => (mid === "new" ? [textPart(4100)] : [textPart(1500)]),
+  })
   assert.equal(lastPerfValues(mixed, "s1", "prov/other").tps, null)
   assert.equal(lastPerfValues(mixed, "s1", "prov/model").tps, 200)
 }
@@ -406,7 +530,7 @@ function runningToolPart(start: number): Part {
   } as unknown as Part
 }
 
-// ── computeLivePerf tests ──────────────────────────────────────────────────
+// ── 流式性能测试 ──────────────────────────────────────────────────
 
 // streaming：首字精确 + 估算速度
 {
@@ -432,7 +556,11 @@ function runningToolPart(start: number): Part {
 
 // prefill：首个内容 part 未到达 → 显示等待时长
 {
-  const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [liveAm()], parts: () => [] })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [liveAm()],
+    parts: () => [],
+  })
   const origNow = Date.now
   Date.now = () => 2000
   try {
@@ -445,13 +573,19 @@ function runningToolPart(start: number): Part {
 
 // tool：工具运行中 → 工具计时（无内容产出时冻结值为 null）
 {
-  const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [liveAm()], parts: () => [runningToolPart(2000)] })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [liveAm()],
+    parts: () => [runningToolPart(2000)],
+  })
   const origNow = Date.now
   Date.now = () => 3000
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "tool" && lv.toolMs === 1000)
-    assert.ok(lv && lv.phase === "tool" && lv.ttft === null && lv.tps === null && lv.elapsed === null)
+    assert.ok(
+      lv && lv.phase === "tool" && lv.ttft === null && lv.tps === null && lv.elapsed === null,
+    )
   } finally {
     Date.now = origNow
   }
@@ -460,10 +594,19 @@ function runningToolPart(start: number): Part {
 // tool：pending（参数仍流式）且无 time.start → 工具计时回退消息创建时刻，不归零
 {
   const pendingNoTime = {
-    id: "tl", sessionID: "s1", messageID: "m1", type: "tool", callID: "c", tool: "bash",
+    id: "tl",
+    sessionID: "s1",
+    messageID: "m1",
+    type: "tool",
+    callID: "c",
+    tool: "bash",
     state: { status: "pending" },
   } as unknown as Part
-  const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [liveAm()], parts: () => [pendingNoTime] })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [liveAm()],
+    parts: () => [pendingNoTime],
+  })
   const origNow = Date.now
   Date.now = () => 3000
   try {
@@ -489,10 +632,10 @@ function runningToolPart(start: number): Part {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "tool")
     if (lv && lv.phase === "tool") {
-      assert.equal(lv.toolMs, 1000)              // 6000 − 5000（活跃工具起点）
-      assert.equal(lv.ttft, 500)                 // 1500 − 1000
-      assert.equal(lv.elapsed, 2500)             // 5000 − 1500 − 1000（已完成工具区间）
-      assert.ok(Math.abs(lv.tps! - 5.6) < 1e-9)  // 14 tok / 2500ms × 1000
+      assert.equal(lv.toolMs, 1000) // 6000 − 5000（活跃工具起点）
+      assert.equal(lv.ttft, 500) // 1500 − 1000
+      assert.equal(lv.elapsed, 3000) // 5000 − 1500 − 1000（已完成工具区间）
+      assert.ok(Math.abs(lv.tps! - 5.6) < 1e-9) // 14 tok / 2500ms × 1000
     }
   } finally {
     Date.now = origNow
@@ -503,7 +646,11 @@ function runningToolPart(start: number): Part {
 // 不再计时，由调用方回落最近精确样本（非工具阶段）
 {
   const done = liveAm({ time: { created: 1000, completed: 3000 }, finish: "tool-calls" })
-  const api = makeApi({ status: () => ({ type: "busy" }), messages: () => [done], parts: () => [toolPart(1500, 2000)] })
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [done],
+    parts: () => [toolPart(1500, 2000)],
+  })
   const origNow = Date.now
   Date.now = () => 4000
   try {
@@ -547,8 +694,8 @@ function runningToolPart(start: number): Part {
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "prefill" && lv.waitMs === 3000)
-    assert.equal(lv?.ttft, null)                             // 首字段沿用 waitMs
-    assert.equal(lv?.elapsed, 600)                           // 1200 - 600（上一步冻结）
+    assert.equal(lv?.ttft, null) // 首字段沿用 waitMs
+    assert.equal(lv?.elapsed, 700) // 1200 - 600（上一步冻结）
     assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)
   } finally {
     Date.now = origNow
@@ -562,17 +709,16 @@ function runningToolPart(start: number): Part {
   const api = makeApi({
     status: () => ({ type: "busy" }),
     messages: () => [prev, cur],
-    parts: (mid) => (mid === "m0"
-      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
-      : [textPart(1500, "hi")]),
+    parts: (mid) =>
+      mid === "m0" ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)] : [textPart(1500, "hi")],
   })
   const origNow = Date.now
   Date.now = () => 2200
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "streaming")
-    assert.equal(lv?.ttft, 500)                              // 当前步 1500 - 1000
-    assert.equal(lv?.elapsed, 700)                           // 2200 - 1500
+    assert.equal(lv?.ttft, 500) // 当前步 1500 - 1000
+    assert.equal(lv?.elapsed, 1200) // 2200 - 1500
     assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9) // 守卫未过 → 沿用上一步
   } finally {
     Date.now = origNow
@@ -607,9 +753,18 @@ function runningToolPart(start: number): Part {
   const api = makeApi({
     status: () => ({ type: "busy" }),
     messages: () => [prev, cur],
-    parts: (mid) => (mid === "m0"
-      ? [toolPart(1200, 1400)]
-      : [{ id: "t", sessionID: "s1", messageID: "m1", type: "text", text: "a".repeat(40) } as unknown as Part]),
+    parts: (mid) =>
+      mid === "m0"
+        ? [toolPart(1200, 1400)]
+        : [
+            {
+              id: "t",
+              sessionID: "s1",
+              messageID: "m1",
+              type: "text",
+              text: "a".repeat(40),
+            } as unknown as Part,
+          ],
   })
   const origNow = Date.now
   Date.now = () => 4000
@@ -628,18 +783,19 @@ function runningToolPart(start: number): Part {
   const api = makeApi({
     status: () => ({ type: "busy" }),
     messages: () => [prev, cur],
-    parts: (mid) => (mid === "m0"
-      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
-      : [runningToolPart(2500)]),
+    parts: (mid) =>
+      mid === "m0"
+        ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+        : [runningToolPart(2500)],
   })
   const origNow = Date.now
   Date.now = () => 4000
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "tool" && lv.toolMs === 1500) // 4000 - 2500
-    assert.equal(lv?.ttft, 100)                               // 上一步 600 - 500
-    assert.equal(lv?.elapsed, 600)                            // 1200 - 600
-    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)  // 上一步冻结值
+    assert.equal(lv?.ttft, 100) // 上一步 600 - 500
+    assert.equal(lv?.elapsed, 700) // 1200 - 600
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9) // 上一步冻结值
   } finally {
     Date.now = origNow
   }
@@ -653,18 +809,19 @@ function runningToolPart(start: number): Part {
   const api = makeApi({
     status: () => ({ type: "busy" }),
     messages: () => [prev, cur],
-    parts: (mid) => (mid === "m0"
-      ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
-      : [textPart(1500, "hi"), runningToolPart(2000)]),
+    parts: (mid) =>
+      mid === "m0"
+        ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+        : [textPart(1500, "hi"), runningToolPart(2000)],
   })
   const origNow = Date.now
   Date.now = () => 3000
   try {
     const lv = computeLivePerf(api, "s1")
     assert.ok(lv && lv.phase === "tool")
-    assert.equal(lv?.ttft, 500)                               // 当前步 1500 - 1000
-    assert.equal(lv?.elapsed, 500)                            // 2000 - 1500
-    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9)  // 当前步产出过少 → 沿用上一步
+    assert.equal(lv?.ttft, 500) // 当前步 1500 - 1000
+    assert.equal(lv?.elapsed, 1000) // 2000 - 1500
+    assert.ok(Math.abs(lv!.tps! - (14 / 600) * 1000) < 1e-9) // 当前步产出过少 → 沿用上一步
   } finally {
     Date.now = origNow
   }
@@ -678,7 +835,10 @@ function runningToolPart(start: number): Part {
   const api = makeApi({
     status: () => ({ type: "busy" }),
     messages: () => [prev, user, cur],
-    parts: (mid) => (mid === "m0" ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)] : [runningToolPart(1500)]),
+    parts: (mid) =>
+      mid === "m0"
+        ? [textPart(600, "a".repeat(40)), toolPart(1200, 1400)]
+        : [runningToolPart(1500)],
   })
   const origNow = Date.now
   Date.now = () => 3000
@@ -694,17 +854,31 @@ function runningToolPart(start: number): Part {
 }
 
 // idle / retry → null（回落宿主 Slot）
-assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "idle" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)
-assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messages: () => [liveAm()], parts: () => [] }), "s1"), null)
+assert.equal(
+  computeLivePerf(
+    makeApi({ status: () => ({ type: "idle" }), messages: () => [liveAm()], parts: () => [] }),
+    "s1",
+  ),
+  null,
+)
+assert.equal(
+  computeLivePerf(
+    makeApi({ status: () => ({ type: "retry" }), messages: () => [liveAm()], parts: () => [] }),
+    "s1",
+  ),
+  null,
+)
 
 // ── hostTurnTps：宿主口径（回合聚合、分母含首字等待、仅消息级时间戳）────
 {
   const s1 = liveAm({
-    id: "a1", time: { created: 1000, streamed: 6000, completed: 6100 },
+    id: "a1",
+    time: { created: 1000, streamed: 6000, completed: 6100 },
     tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
   })
   const s2 = liveAm({
-    id: "a2", time: { created: 20000, streamed: 27000, completed: 27100 },
+    id: "a2",
+    time: { created: 20000, streamed: 27000, completed: 27100 },
     tokens: { input: 0, output: 30, reasoning: 20, cache: { read: 0, write: 0 } },
   })
   const user = { id: "u0", role: "user" } as unknown as Message
@@ -713,7 +887,10 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
   assert.ok(Math.abs(hostTurnTps(api, "s1")! - 12.5) < 1e-9)
 
   // 回合边界：user 之后属于上一回合，不计入（只聚合 s2：50 tok / 7s）
-  const api2 = makeApi({ messages: () => [user, s1, { id: "u1", role: "user" } as unknown as Message, s2], parts: () => [] })
+  const api2 = makeApi({
+    messages: () => [user, s1, { id: "u1", role: "user" } as unknown as Message, s2],
+    parts: () => [],
+  })
   assert.ok(Math.abs(hostTurnTps(api2, "s1")! - 50 / 7) < 1e-9)
 
   // 任一步缺 streamed（进行中 / v1 旧数据）→ null；末尾仅 user（刚提交）→ null
@@ -740,17 +917,32 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
   assert.ok(Math.abs(hostTurnTps(api5, "s1")! - 50 / 7) < 1e-9)
 
   // 末回合无效（缺 streamed）时取上一有效回合（原实现返回 null）：s2 = 50/7
-  const api6 = makeApi({ messages: () => [user, s2, { id: "u1", role: "user" } as unknown as Message, noStream], parts: () => [] })
+  const api6 = makeApi({
+    messages: () => [user, s2, { id: "u1", role: "user" } as unknown as Message, noStream],
+    parts: () => [],
+  })
   assert.ok(Math.abs(hostTurnTps(api6, "s1")! - 50 / 7) < 1e-9)
 }
 
 // ── aggregateHostTps：逐回合聚合（最近值 + 中位数）；忽略非 assistant 标记 ─────
 {
   const user = { id: "u0", role: "user" } as unknown as Message
-  const a1 = liveAm({ id: "a1", time: { created: 1000, streamed: 6000, completed: 6100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
-  const a2 = liveAm({ id: "a2", time: { created: 7000, streamed: 12000, completed: 12100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
+  const a1 = liveAm({
+    id: "a1",
+    time: { created: 1000, streamed: 6000, completed: 6100 },
+    tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  const a2 = liveAm({
+    id: "a2",
+    time: { created: 7000, streamed: 12000, completed: 12100 },
+    tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
   const u1 = { id: "u1", role: "user" } as unknown as Message
-  const b1 = liveAm({ id: "b1", time: { created: 20000, streamed: 22000, completed: 22100 }, tokens: { input: 0, output: 30, reasoning: 20, cache: { read: 0, write: 0 } } })
+  const b1 = liveAm({
+    id: "b1",
+    time: { created: 20000, streamed: 22000, completed: 22100 },
+    tokens: { input: 0, output: 30, reasoning: 20, cache: { read: 0, write: 0 } },
+  })
   // 回合1 = (100+100)/10s = 20；回合2 = 50/2s = 25
   const stats = aggregateHostTps([user, a1, u1, b1] as unknown as Message[])
   assert.equal(stats.n, 2)
@@ -759,7 +951,11 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
 
   // 无有效回合（缺 streamed）→ 全空（V1 无 streamed → 调用方回落输出速度）
   const bad = liveAm({ id: "c1", time: { created: 1000, completed: 2000 } })
-  assert.deepEqual(aggregateHostTps([user, bad] as unknown as Message[]), { last: null, med: null, n: 0 })
+  assert.deepEqual(aggregateHostTps([user, bad] as unknown as Message[]), {
+    last: null,
+    med: null,
+    n: 0,
+  })
 
   // 回合中途的非 assistant 标记（system/skill）跳过而不截断：a1、a2 同回合
   const sys = { id: "sy1", role: "system" } as unknown as Message
@@ -772,8 +968,18 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
 {
   const ux = { id: "ux", role: "user" } as unknown as Message
   // 回合1 归属 prov/model：100 tok / 2s = 50；回合2 归属 p/fast：100 tok / 1s = 100
-  const slow = liveAm({ id: "s1", time: { created: 1000, streamed: 3000, completed: 3100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } })
-  const fast = liveAm({ id: "s2", time: { created: 5000, streamed: 6000, completed: 6100 }, tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }, modelID: "fast", providerID: "p" })
+  const slow = liveAm({
+    id: "s1",
+    time: { created: 1000, streamed: 3000, completed: 3100 },
+    tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  const fast = liveAm({
+    id: "s2",
+    time: { created: 5000, streamed: 6000, completed: 6100 },
+    tokens: { input: 0, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: "fast",
+    providerID: "p",
+  })
   const msgs = [ux, slow, ux, fast] as unknown as Message[]
 
   // 不过滤：两回合
@@ -805,4 +1011,43 @@ assert.equal(computeLivePerf(makeApi({ status: () => ({ type: "retry" }), messag
   assert.equal(hostTurnTps(api, "s1", "p/nope"), null)
 }
 
-console.log("perf tests passed")
+// 从最早运行的工具起点冻结统计，避免计入等待并行工具的时间。
+{
+  const api = makeApi({
+    status: () => ({ type: "busy" }),
+    messages: () => [liveAm()],
+    parts: () => [textPart(1500, "a".repeat(40)), runningToolPart(2500), runningToolPart(3500)],
+  })
+  const original = Date.now
+  Date.now = () => 4500
+  try {
+    const live = computeLivePerf(api, "s1")
+    assert.equal(live?.phase, "tool")
+    assert.equal(live?.toolMs, 2000)
+    assert.equal(live?.elapsed, 1500)
+    assert.equal(live?.tps, 14)
+  } finally {
+    Date.now = original
+  }
+}
+
+// 运行中追加的输入仍属同一新版回合，idle 标记结束回合。
+{
+  const first = am({
+    id: "idle-a",
+    time: { created: 1000, streamed: 2000, completed: 2100 },
+    tokens: { output: 100, reasoning: 0 },
+  })
+  const second = am({
+    id: "idle-b",
+    time: { created: 3000, streamed: 5000, completed: 5100 },
+    tokens: { output: 200, reasoning: 0 },
+  })
+  const modern = [{ role: "idle" }, { role: "user" }, first, { role: "user" }, second] as Message[]
+  assert.equal(hostTurnTps(makeApi({ messages: () => modern, parts: () => [] }), "s1"), 100)
+  assert.equal(aggregateHostTps(modern).n, 1)
+  const legacy = modern.slice(1)
+  assert.equal(aggregateHostTps(legacy).n, 2)
+}
+
+console.log("性能统计测试通过")

@@ -3,10 +3,8 @@ import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 const server: Plugin = async () => ({})
 
 /**
- * V2 (opencode2) requires the default export to expose an `id` plus a
- * `setup` (or `effect`) function. This plugin has no server-side behavior,
- * so an empty setup keeps the module schema-valid and active on V2 while the
- * `server` field stays for V1 detection.
+ * V2 要求默认导出包含 id 和 setup（或 effect）。本插件无需服务端逻辑，
+ * 因此 setup 使用空实现以通过宿主校验；server 字段供 V1 识别。
  */
 const setup = async () => {}
 

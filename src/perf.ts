@@ -1,34 +1,14 @@
+import { usesIdleTurns, isTurnBoundary } from "./turns"
 import type { PanelApi } from "./panel/panel-api"
 import type { AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
 import { ASCII_PER_TOKEN, estimateTokens, num } from "./tokens"
 
-// ── performance (TTFT / TPS / latency) ──
-// 口径（在 opencode-throughput / tokenwatch 上的修正版）：
-//   TTFT = 首个内容 part (text/reasoning) 的 time.start − message.time.created
-//          （体感口径：含 DB 写、预处理与建连等待，略大于 provider 报告的 TTFT）
-//   净生成 = time.completed − 首个 part start − 工具执行窗口∩生成区间
-//   TPS   = (output + reasoning) / 净生成 × 1000   ← 供应商全量生成 token
-//          （例外 1——隐藏思考：usage 计入 reasoningTokens 但无流式 reasoning
-//            part（chat-completions o 系等）：思考解码期不可观测、分母从首个
-//            text part 起算，保留思考 token 会数量级虚高 → 分子退回 output，
-//            与实时估算"只数流式可见"一致）
-//          （例外 2——整包参数：缓冲 router 把工具参数整包送达时分子剔除
-//            参数估算、退回可见口径；判据与方向见 BUFFERED_* 常量注释）
-//   延迟  = time.completed − time.created − 工具执行窗口∩生成区间（净模型耗时）
-// 分子为供应商精确 output_tokens（含 tool_use 参数 JSON），分母仅扣"工具执行
-// 等待"（tool-call→tool-result 的 state.time 区间，并行去重、钳位）。
-// 压缩消息与纯工具 step 不计入样本；小步/缓冲网关守卫触发时 TPS 记 null。
-// 宿主动态（packages/opencode/src/session/processor.ts）：
-//   text-start → time.start；reasoning-start → time.start（思考段有戳，
-//   delta 不更新 end，reasoning-end/cleanup 补 end，流式中只读 start）；
-//   tool：参数流式期（tool-input-*）仅建 pending 无 time，tool-call 才置
-//   running 并打 start，tool-result 补 end → 参数生成期不可观测，
-//   留在分母（已知残余低估），与分子（参数已全量计入）方向相反相互弱化。
-//   采样逻辑单一实现（computePerfSample），侧边栏累计与两壳底栏最近值
-//   （lastPerfValues）共用，杜绝双源漂移。V1 时间戳持久化在数据库、直接读取推导；V2 text
-//   首字时刻由内容开始事件捕获注入，历史数据缺失 → 该步不计入样本
-//   （见 v2/panel-api.ts）。
+// TTFT = 首个内容开始时间 - 步骤创建时间。
+// 输出 TPS = 生成 token 数 /（完成时间 - 首个内容时间 - 工具耗时）。
+// 延迟包含 TTFT，并扣除合并后的工具执行区间。
+// 隐藏推理和缓冲工具参数使用下方的保守有效性判断。
+// V2 历史文本缺少首字时间，详见 v2/panel-api.ts。
 
 /** 过滤时间戳噪声较大的短生成窗口；校准见 benchmarks/tps-display-probe.mts。 */
 export const MIN_GEN_MS = 300
@@ -67,9 +47,16 @@ function mergedIntervalMs(intervals: readonly [number, number][], lo: number, hi
     const a = Math.max(s, lo)
     const b = hi === undefined ? e : Math.min(e, hi)
     if (b <= a) continue
-    if (ws < 0) { ws = a; we = b }
-    else if (a <= we) { if (b > we) we = b }
-    else { ms += we - ws; ws = a; we = b }
+    if (ws < 0) {
+      ws = a
+      we = b
+    } else if (a <= we) {
+      if (b > we) we = b
+    } else {
+      ms += we - ws
+      ws = a
+      we = b
+    }
   }
   if (ws >= 0) ms += we - ws
   return ms
@@ -88,7 +75,12 @@ export interface PerfGateInputs {
   genMs: number
 }
 
-export function passesTpsGate(genTok: number, genMs: number, minGenMs = MIN_GEN_MS, minMsPerToken = BUFFER_MS_PER_TOKEN): boolean {
+export function passesTpsGate(
+  genTok: number,
+  genMs: number,
+  minGenMs = MIN_GEN_MS,
+  minMsPerToken = BUFFER_MS_PER_TOKEN,
+): boolean {
   return genTok > 0 && genMs >= Math.max(minGenMs, genTok * minMsPerToken)
 }
 
@@ -101,7 +93,9 @@ function toolParamText(p: Part): string {
   try {
     if (typeof st?.raw === "string" && st.raw) return st.raw
     return st?.input != null ? JSON.stringify(st.input) : ""
-  } catch { return "" }
+  } catch {
+    return ""
+  }
 }
 
 /**
@@ -119,17 +113,21 @@ function bufferedParamTok(
   const gap = fts - anchor
   if (gap > BUFFERED_GAP_MS) return 0
   let visTok = 0
-  for (const c of pre) visTok += Math.ceil(c.len / (c.reasoning ? ASCII_PER_TOKEN.thinking : ASCII_PER_TOKEN.answer))
+  for (const c of pre)
+    visTok += Math.ceil(c.len / (c.reasoning ? ASCII_PER_TOKEN.thinking : ASCII_PER_TOKEN.answer))
   const visMs = anchor - fs
   const visTps = visMs > 0 ? (visTok / visMs) * 1000 : 0
   if (visTps <= 0) return 0
-  const paramTok = toolRefs.reduce((n, t) => n + Math.ceil(toolParamText(t.part).length / ASCII_PER_TOKEN.code), 0)
+  const paramTok = toolRefs.reduce(
+    (n, t) => n + Math.ceil(toolParamText(t.part).length / ASCII_PER_TOKEN.code),
+    0,
+  )
   if (paramTok < BUFFERED_MIN_PARAM_TOK) return 0
   if ((paramTok / Math.max(gap, 1)) * 1000 < visTps * BUFFERED_SPEED_RATIO) return 0
   return paramTok
 }
 
-// ── per-message perf sample ──
+// ── 单消息性能样本 ──
 /**
  * 单条 assistant 消息的性能样本（精确口径唯一实现）：侧边栏「性能」累计与
  * 两壳底栏最近值（lastPerfValues）共用。条件：已完成、无错误、非压缩、产出
@@ -195,13 +193,16 @@ export function computePerfSample(
   const ttft = fs - created
   const genMs = Math.max(0, completed - fs - toolMs)
   const latency = Math.max(0, completed - created - toolMs)
-  if (gateInputs) { gateInputs.genTok = genTok; gateInputs.genMs = genMs }
+  if (gateInputs) {
+    gateInputs.genTok = genTok
+    gateInputs.genMs = genMs
+  }
   // 守卫（小步噪声 / 缓冲网关）触发：TPS 记 null，ttft/latency 照常
   const tps = passesTpsGate(genTok, genMs) ? (genTok / genMs) * 1000 : null
   return { ttft, tps, latency }
 }
 
-// ── session perf aggregation ──
+// ── 会话性能聚合 ──
 /**
  * 会话性能聚合（中位数口径，可被 tests/perf.test.ts 直接单测；KV 快照只存
  * 聚合结果不存原始样本）。用中位数而非均值：会话常跨模型/跨路由，均值被
@@ -209,21 +210,27 @@ export function computePerfSample(
  */
 export interface PerfStats {
   ttftLast: number | null // 最近一次首字延迟 (ms)
-  tpsLast: number | null  // 最近一次输出速度 (tok/s)
-  latLast: number | null  // 最近一次净模型延迟 (ms，已扣工具执行窗口)
-  ttftMed: number | null  // 会话首字延迟中位数 (ms)
-  tpsMed: number | null   // 会话输出速度中位数 (tok/s)
-  latMed: number | null   // 会话净模型延迟中位数 (ms)
-  ttftN: number           // 有效样本数（TTFT/延迟共用；压缩消息与纯工具 step 不计）
-  tpsN: number            // TPS 有效样本数（守卫记 null 的样本不计入）
-  hasPerf: boolean        // 是否存在有效样本
+  tpsLast: number | null // 最近一次输出速度 (tok/s)
+  latLast: number | null // 最近一次净模型延迟 (ms，已扣工具执行窗口)
+  ttftMed: number | null // 会话首字延迟中位数 (ms)
+  tpsMed: number | null // 会话输出速度中位数 (tok/s)
+  latMed: number | null // 会话净模型延迟中位数 (ms)
+  ttftN: number // 有效样本数（TTFT/延迟共用；压缩消息与纯工具 step 不计）
+  tpsN: number // TPS 有效样本数（守卫记 null 的样本不计入）
+  hasPerf: boolean // 是否存在有效样本
 }
 
 /** PerfStats 全空初始值。 */
 export const EMPTY_PERF: PerfStats = {
-  ttftLast: null, tpsLast: null, latLast: null,
-  ttftMed: null, tpsMed: null, latMed: null,
-  ttftN: 0, tpsN: 0, hasPerf: false,
+  ttftLast: null,
+  tpsLast: null,
+  latLast: null,
+  ttftMed: null,
+  tpsMed: null,
+  latMed: null,
+  ttftN: 0,
+  tpsN: 0,
+  hasPerf: false,
 }
 
 /** 中位数：偶数个取中间两值平均。 */
@@ -233,7 +240,7 @@ function median(values: readonly number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
 }
 
-// ── model filtering ──
+// ── 模型过滤 ──
 // 同一会话跨模型切换会混合不同模型的样本（速度差异可达数倍），中位数与最近值
 // 均不代表当前模型。每条 assistant 消息自带 modelID/providerID（生成时
 // 写入、持久化），按此过滤零成本；过滤上下文由调用方传入（见 index.tsx）。
@@ -255,11 +262,14 @@ export function modelKeyOf(am: AssistantMessage): string | null {
  */
 export function currentModelKey(api: PanelApi, sid: string): string | null {
   try {
-    const session = typeof api.state.session.get === "function" ? api.state.session.get(sid) : undefined
+    const session =
+      typeof api.state.session.get === "function" ? api.state.session.get(sid) : undefined
     const p = session?.model?.providerID
     const m = session?.model?.id
     if (p && m) return `${p}/${m}`
-  } catch { /* fall through */ }
+  } catch {
+    /* 继续尝试下方的回退逻辑 */
+  }
   try {
     const msgs = api.state.session.messages(sid) as Message[]
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -268,7 +278,9 @@ export function currentModelKey(api: PanelApi, sid: string): string | null {
       const k = modelKeyOf(msg as AssistantMessage)
       if (k) return k
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* 继续尝试下方的回退逻辑 */
+  }
   return null
 }
 
@@ -278,7 +290,11 @@ export interface PerfFilterOpts {
 }
 
 /** 遍历 assistant 消息逐条采样（computePerfSample 唯一口径），聚合为中位数 PerfStats。 */
-export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: PerfFilterOpts): PerfStats {
+export function aggregatePerf(
+  api: PanelApi,
+  msgs: readonly Message[],
+  opts?: PerfFilterOpts,
+): PerfStats {
   const filterKey = opts?.modelKey || undefined
   const ttfts: number[] = []
   const tpss: number[] = []
@@ -288,7 +304,9 @@ export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: Pe
     const am = msg as AssistantMessage
     if (filterKey !== undefined && modelKeyOf(am) !== filterKey) continue
     let parts: readonly Part[] = []
-    try { parts = api.state.part(am.id) } catch {}
+    try {
+      parts = api.state.part(am.id)
+    } catch {}
     const sample = computePerfSample(am, parts)
     if (!sample) continue
     ttfts.push(sample.ttft)
@@ -309,7 +327,11 @@ export function aggregatePerf(api: PanelApi, msgs: readonly Message[], opts?: Pe
 }
 
 /** 最近有效样本提供首字/延迟；速度独立回溯，口径同 aggregatePerf.tpsLast。 */
-export function lastPerfValues(api: PanelApi, sid: string, filterKey?: string | null): { sample: PerfSample | null; tps: number | null } {
+export function lastPerfValues(
+  api: PanelApi,
+  sid: string,
+  filterKey?: string | null,
+): { sample: PerfSample | null; tps: number | null } {
   const msgs = api.state.session.messages(sid) as Message[]
   let sample: PerfSample | null = null
   let tps: number | null = null
@@ -319,7 +341,9 @@ export function lastPerfValues(api: PanelApi, sid: string, filterKey?: string | 
     const am = m as AssistantMessage
     if (filterKey && modelKeyOf(am) !== filterKey) continue
     let parts: readonly Part[] = []
-    try { parts = api.state.part(am.id) } catch {}
+    try {
+      parts = api.state.part(am.id)
+    } catch {}
     const current = computePerfSample(am, parts)
     if (!current) continue
     sample ??= current
@@ -329,20 +353,19 @@ export function lastPerfValues(api: PanelApi, sid: string, filterKey?: string | 
   return { sample, tps }
 }
 
-// ── host-style turn TPS (v2 only) ──
-/**
- * 回合切分：user/synthetic/idle 为回合边界（对齐宿主 inputIndex），其余非
- * assistant 标记（system/skill/shell/切换标记…）跳过而不截断——宿主在回合中途
- * 遇到这些消息仍连续聚合，若在此断开会丢步、与 footer 口径不一致。
- * 回合边界唯一实现：hostTurnTps 与显示口径回放探针（benchmarks/tps-display-probe.mts）共用。
- */
+// ── 宿主口径的回合 TPS（仅 v2） ──
+/** 与宿主回合划分一致：新版 v2 使用 idle 标记，旧会话使用用户输入。 */
 export function splitTurns(msgs: readonly Message[]): AssistantMessage[][] {
   const turns: AssistantMessage[][] = []
   let cur: AssistantMessage[] | null = null
+  const idleTurns = usesIdleTurns(msgs)
   for (const m of msgs) {
     const role = String((m as { role?: unknown }).role)
-    if (role === "user" || role === "synthetic" || role === "idle") {
-      if (cur) { turns.push(cur); cur = null }
+    if (isTurnBoundary(role, idleTurns)) {
+      if (cur) {
+        turns.push(cur)
+        cur = null
+      }
       continue
     }
     if (role !== "assistant") continue
@@ -391,8 +414,8 @@ function turnModelKey(steps: readonly AssistantMessage[]): string | null {
 /** 会话级宿主口径 TPS 聚合（底栏「速度」精确值 + 侧边栏「速度」行在体感模式下消费）。 */
 export interface HostTpsStats {
   last: number | null // 最近一个有效回合的宿主 TPS
-  med: number | null  // 全部有效回合的宿主 TPS 中位数
-  n: number           // 有效回合数
+  med: number | null // 全部有效回合的宿主 TPS 中位数
+  n: number // 有效回合数
 }
 
 /** HostTpsStats 空值（无有效回合 / 回落；与 EMPTY_PERF 同源约定）。 */
@@ -403,7 +426,10 @@ export const EMPTY_HOST_TPS: HostTpsStats = { last: null, med: null, n: 0 }
  * filterKey 非空时按回合归属模型过滤（命中 perfModelFilter，整回合计入/排除）。
  * 无有效回合 → 全空，调用方回落输出速度口径（V1 无 streamed → 恒空 → 自动回落）。
  */
-export function aggregateHostTps(msgs: readonly Message[], filterKey?: string | null): HostTpsStats {
+export function aggregateHostTps(
+  msgs: readonly Message[],
+  filterKey?: string | null,
+): HostTpsStats {
   const vals: number[] = []
   for (const steps of splitTurns(msgs)) {
     if (filterKey && turnModelKey(steps) !== filterKey) continue
@@ -427,10 +453,12 @@ export function hostTurnTps(api: PanelApi, sid: string, filterKey?: string | nul
   try {
     const msgs = api.state.session.messages(sid) as Message[]
     return aggregateHostTps(msgs, filterKey).last
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
-// ── live (streaming) perf estimation ──
+// ── 流式性能估算 ──
 /**
  * usage 与 time.completed 仅在 step 结束时写入，流式期间从 part 增量实时估算：
  *   TTFT = 首个内容 part 的 time.start − time.created（首个 part 到达前显示等待时长）
@@ -449,11 +477,11 @@ export function hostTurnTps(api: PanelApi, sid: string, filterKey?: string | nul
  */
 export interface LivePerf {
   phase: "prefill" | "streaming" | "tool"
-  waitMs: number | null   // prefill：等待进行中；其余 null
-  ttft: number | null     // streaming/tool：本步（或回合内最近）首字；prefill 为 null
-  tps: number | null      // streaming：实时估算；tool/prefill：冻结/回落本回合最近实时值；无历史为 null
-  elapsed: number | null  // 净生成进行时长（streaming 增长 / tool·prefill 冻结回落），实时延迟段用
-  toolMs: number | null   // tool 相位工具计时；其余 null
+  waitMs: number | null // prefill：等待进行中；其余 null
+  ttft: number | null // streaming/tool：本步（或回合内最近）首字；prefill 为 null
+  tps: number | null // streaming：实时估算；tool/prefill：冻结/回落本回合最近实时值；无历史为 null
+  elapsed: number | null // 当前步延迟，含首字等待并扣除工具执行；工具/等待相位冻结
+  toolMs: number | null // tool 相位工具计时；其余 null
 }
 
 /** 单条 assistant 消息的实时锚点（当前步估算与跨步冻结回落共用同一扫描口径）。 */
@@ -476,17 +504,21 @@ function scanLiveAnchors(api: PanelApi, am: AssistantMessage): LiveAnchors {
   let lastToolStart: number | undefined
   let toolIvs: [number, number][] | undefined
   let parts: readonly Part[] = []
-  try { parts = api.state.part(am.id) } catch {}
+  try {
+    parts = api.state.part(am.id)
+  } catch {}
   for (const p of parts) {
     if (p.type === "tool") {
-      const ps = (p as { state?: { status?: string; time?: { start?: number; end?: number } } }).state
+      const ps = (p as { state?: { status?: string; time?: { start?: number; end?: number } } })
+        .state
       const ts = ps?.time?.start
-      if (typeof ts === "number" && (lastToolStart === undefined || ts > lastToolStart)) lastToolStart = ts
+      if (typeof ts === "number" && (lastToolStart === undefined || ts > lastToolStart))
+        lastToolStart = ts
       if (ps?.status === "pending" || ps?.status === "running") {
         // 计时起点取最新活跃工具的 time.start；pending（参数仍在流式生成）
         // 时无 time，回退消息创建时刻兜底
         toolActive = true
-        if (typeof ts === "number" && (toolStart === undefined || ts > toolStart)) toolStart = ts
+        if (typeof ts === "number" && (toolStart === undefined || ts < toolStart)) toolStart = ts
       } else {
         // 已完成/出错工具：记录区间，循环后统一合并钳位再扣除，并把工具参数
         // （tool_use 输入）计入估算分子，与精确侧全量口径一致；pending 段参数
@@ -504,22 +536,41 @@ function scanLiveAnchors(api: PanelApi, am: AssistantMessage): LiveAnchors {
     if (p.type !== "text" && p.type !== "reasoning") continue
     const tm = (p as { time?: { start?: number; end?: number } }).time
     const st = tm?.start
-    if (typeof st === "number" && st > 0 && (firstStart === undefined || st < firstStart)) firstStart = st
+    if (typeof st === "number" && st > 0 && (firstStart === undefined || st < firstStart))
+      firstStart = st
     const txt = (p as { text?: unknown }).text
-    if (typeof txt === "string" && txt) estTok += estimateTokens(txt, p.type === "reasoning" ? "thinking" : "answer")
+    if (typeof txt === "string" && txt)
+      estTok += estimateTokens(txt, p.type === "reasoning" ? "thinking" : "answer")
   }
-  return { created: am.time?.created, firstStart, estTok, toolActive, toolStart, lastToolStart, toolIvs }
+  return {
+    created: am.time?.created,
+    firstStart,
+    estTok,
+    toolActive,
+    toolStart,
+    lastToolStart,
+    toolIvs,
+  }
 }
 
 // 冻结口径：以 end 为生成窗口终点计算 ttft/tps/elapsed——工具运行时分子分母同时停摆，
 // 数值即「暂停前的最近值」；恢复生成后与暂停前严格连续（与精确侧扣窗口同一思路）
-function frozenFrom(a: LiveAnchors, end: number, now: number): Pick<LivePerf, "ttft" | "tps" | "elapsed"> {
+function frozenFrom(
+  a: LiveAnchors,
+  end: number,
+  now: number,
+): Pick<LivePerf, "ttft" | "tps" | "elapsed"> {
   if (a.firstStart === undefined) return { ttft: null, tps: null, elapsed: null }
   const genEnd = Math.max(a.firstStart, Math.min(end, now))
   const paused = a.toolIvs ? mergedIntervalMs(a.toolIvs, a.firstStart, genEnd) : 0
   const genMs = Math.max(0, genEnd - a.firstStart - paused)
-  const tps = genMs >= LIVE_MIN_GEN_MS && a.estTok >= LIVE_MIN_TOK ? (a.estTok / genMs) * 1000 : null
-  return { ttft: Math.max(0, a.firstStart - (a.created ?? a.firstStart)), tps, elapsed: genMs }
+  const tps =
+    genMs >= LIVE_MIN_GEN_MS && a.estTok >= LIVE_MIN_TOK ? (a.estTok / genMs) * 1000 : null
+  return {
+    ttft: Math.max(0, a.firstStart - (a.created ?? a.firstStart)),
+    tps,
+    elapsed: genMs + Math.max(0, a.firstStart - (a.created ?? a.firstStart)),
+  }
 }
 
 /**
@@ -539,9 +590,13 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
       if (mode && mode !== "busy" && mode !== "running") return null
     } catch {}
     const msgs = api.state.session.messages(sid) as Message[]
+    const idleTurns = usesIdleTurns(msgs)
     let li = -1
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "assistant") { li = i; break }
+      if (msgs[i].role === "assistant") {
+        li = i
+        break
+      }
     }
     if (li < 0) return null
     const am = msgs[li] as AssistantMessage
@@ -552,7 +607,11 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
     if (!created) return null
     const now = Date.now()
     const frozen = (end: number) => frozenFrom(cur, end, now)
-    const noPerf = (): Pick<LivePerf, "ttft" | "tps" | "elapsed"> => ({ ttft: null, tps: null, elapsed: null })
+    const noPerf = (): Pick<LivePerf, "ttft" | "tps" | "elapsed"> => ({
+      ttft: null,
+      tps: null,
+      elapsed: null,
+    })
     // 跨步回落：沿回合内最近一条有内容产出的 assistant 冻结（回合边界同 hostTurnTps）。
     // 惰性求值并缓存，避免每帧重复回溯历史消息。
     let prev: Pick<LivePerf, "ttft" | "tps" | "elapsed"> | null | undefined
@@ -561,13 +620,13 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
       prev = null
       for (let i = li - 1; i >= 0; i--) {
         const role = String((msgs[i] as { role?: unknown }).role)
-        if (role === "user" || role === "synthetic" || role === "idle") break
+        if (isTurnBoundary(role, idleTurns)) break
         if (role !== "assistant") continue
         const pm = msgs[i] as AssistantMessage
         if (pm.error || pm.summary) break
         const a = scanLiveAnchors(api, pm)
         if (a.firstStart === undefined) continue
-        prev = frozenFrom(a, a.lastToolStart ?? a.firstStart, now)
+        prev = frozenFrom(a, a.lastToolStart ?? pm.time?.completed ?? a.firstStart, now)
         break
       }
       return prev ?? noPerf()
@@ -583,8 +642,13 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
     // 本相位即结束（计时在返回时停）。
     if (cur.toolActive) {
       // frozen 以活跃工具起点为终点；工具计时沿用旧口径：无 time.start 时回退消息创建时刻
-      const end = cur.toolStart ?? now
-      return { phase: "tool", waitMs: null, toolMs: Math.max(0, now - (cur.toolStart ?? created)), ...withCarry(frozen(end)) }
+      const end = cur.toolStart ?? cur.firstStart ?? created
+      return {
+        phase: "tool",
+        waitMs: null,
+        toolMs: Math.max(0, now - (cur.toolStart ?? created)),
+        ...withCarry(frozen(end)),
+      }
     }
     // 容器未提供首个内容时间戳（如 v2 归一化缺失、插件中途接入）时，若已有可见
     // 内容产出，无法估算首字/速度，返回 null 由调用方回落最近精确 TPS。
@@ -594,7 +658,14 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
     // 速度/延迟沿用本回合最近的实时值（回合内冻结，不回落精确），无本回合历史则留空
     if (cur.firstStart === undefined) {
       const f = prevFrozen()
-      return { phase: "prefill", waitMs: Math.max(0, now - created), ttft: null, tps: f.tps, elapsed: f.elapsed, toolMs: null }
+      return {
+        phase: "prefill",
+        waitMs: Math.max(0, now - created),
+        ttft: null,
+        tps: f.tps,
+        elapsed: f.elapsed,
+        toolMs: null,
+      }
     }
     // 纯生成时长：已完成工具区间按 start 排序取并集（并行重叠去重），
     // 钳位到生成窗口 [firstStart, now]（首内容前执行的工具不计）后扣除
@@ -602,7 +673,19 @@ export function computeLivePerf(api: PanelApi, sid: string): LivePerf | null {
     const genMs = Math.max(0, now - cur.firstStart - pausedMs)
     // 守卫：生成窗口 <LIVE_MIN_GEN_MS 或产出 <LIVE_MIN_TOK 时波动过大，速度以本回合
     // 最近的实时值兜底（回合内冻结，不回落精确；首字照常显示）
-    const tps = genMs >= LIVE_MIN_GEN_MS && cur.estTok >= LIVE_MIN_TOK ? (cur.estTok / genMs) * 1000 : prevFrozen().tps
-    return { phase: "streaming", waitMs: null, toolMs: null, ttft: Math.max(0, cur.firstStart - created), tps, elapsed: genMs }
-  } catch { return null }
+    const tps =
+      genMs >= LIVE_MIN_GEN_MS && cur.estTok >= LIVE_MIN_TOK
+        ? (cur.estTok / genMs) * 1000
+        : prevFrozen().tps
+    return {
+      phase: "streaming",
+      waitMs: null,
+      toolMs: null,
+      ttft: Math.max(0, cur.firstStart - created),
+      tps,
+      elapsed: genMs + Math.max(0, cur.firstStart - created),
+    }
+  } catch {
+    return null
+  }
 }

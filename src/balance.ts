@@ -1,4 +1,4 @@
-// ── shared balance auto-switch ──
+// ── 共用的余额供应商自动切换 ──
 // 根据会话最后使用的 provider 自动切换余额 provider。V1 / V2 壳共用的唯一实现，
 // 由各壳的「常驻层」调用（V1: tui()；V2: app 插槽 RuntimeRoot）。
 // 不放在条件挂载的侧边栏组件里——侧栏隐藏时该逻辑必须仍然生效；同时消除此前
@@ -27,7 +27,9 @@ export function syncAutoBalance(api: PanelApi, signals: PanelSignals, sessionId:
       }
     }
     if (!pid) pid = api.state.session.get(sessionId)?.model?.providerID ?? ""
-  } catch { /* session 数据未就绪 */ }
+  } catch {
+    /* session 数据未就绪 */
+  }
   if (!pid) return
   const hit = matchBalanceProvider(pid)
   if (hit) {

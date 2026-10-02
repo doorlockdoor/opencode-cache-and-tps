@@ -6,7 +6,7 @@ import type { Context } from "./types"
  * 侧边栏（TokenCachePanel）与底部状态栏共用，保证命中率颜色同源。
  * - primary ← hue.interactive[300]（v1-migrate 官方映射：interactive = primary）
  * - text/textMuted ← text.base/muted（旧代 default/subdued 兜底）
- * - success/warning/error ← text.feedback.<kind>.base
+ * - 成功 / 警告 / 错误颜色：success/warning/error ← text.feedback.<kind>.base
  * - border ← border.base（缺失兜底到 textMuted）
  * 色值为 RGBA 对象；下游 desaturateTo/rgb 已兼容 0–1 浮点通道。
  */

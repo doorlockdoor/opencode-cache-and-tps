@@ -1,21 +1,42 @@
 import assert from "node:assert/strict"
+import { createMemo, createRoot } from "solid-js"
+import { createStore, produce } from "solid-js/store"
 import { buildParts, normalizeMessages, contentText, createPanelApi } from "../src/v2/panel-api"
 import { computeLivePerf, computePerfSample } from "../src/perf"
 import { collectTokenDist } from "../src/dist"
 
-// ── contentText ────────────────────────────────────────────────────────────
-assert.equal(contentText([{ type: "text", text: "a" }, { type: "file", uri: "file:///x" }]), "a\nfile:///x")
+// ── 内容文本提取 ────────────────────────────────────────────────────────────
+assert.equal(
+  contentText([
+    { type: "text", text: "a" },
+    { type: "file", uri: "file:///x" },
+  ]),
+  "a\nfile:///x",
+)
 assert.equal(contentText(undefined), "")
 
-// ── buildParts：text / reasoning / tool ─────────────────────────────────────
+// ── 片段构建：文本 / 推理 / 工具 ─────────────────────────────────────
 {
   const rec = {
-    id: "a1", type: "assistant", cost: 0.25, time: { created: 100, streamed: 200, completed: 500 },
+    id: "a1",
+    type: "assistant",
+    cost: 0.25,
+    time: { created: 100, streamed: 200, completed: 500 },
     content: [
       { type: "text", text: "hello" },
       { type: "reasoning", text: "think", time: { created: 150, completed: 190 } },
-      { type: "tool", id: "t1", name: "bash", time: { created: 210, ran: 220, completed: 260 },
-        state: { status: "completed", input: { cmd: "ls" }, content: [{ type: "text", text: "out" }], metadata: { name: "x" } } },
+      {
+        type: "tool",
+        id: "t1",
+        name: "bash",
+        time: { created: 210, ran: 220, completed: 260 },
+        state: {
+          status: "completed",
+          input: { cmd: "ls" },
+          content: [{ type: "text", text: "out" }],
+          metadata: { name: "x" },
+        },
+      },
     ],
   }
   const parts = buildParts(rec)
@@ -34,9 +55,18 @@ assert.equal(contentText(undefined), "")
 
 // ── buildParts：error 工具 / skill 消息 / user 文本 ──────────────────────────
 {
-  const errParts = buildParts({ id: "a2", type: "assistant", content: [
-    { type: "tool", id: "t2", name: "read", state: { status: "error", error: { message: "boom" } } },
-  ] })
+  const errParts = buildParts({
+    id: "a2",
+    type: "assistant",
+    content: [
+      {
+        type: "tool",
+        id: "t2",
+        name: "read",
+        state: { status: "error", error: { message: "boom" } },
+      },
+    ],
+  })
   assert.equal(errParts.find((p) => p.type === "tool").state.output, "boom")
 
   const skillParts = buildParts({ id: "s1", type: "skill", name: "pdf", text: "skill body" })
@@ -54,10 +84,37 @@ assert.equal(contentText(undefined), "")
 {
   const raw = [
     { id: "u1", type: "user", text: "q" },
-    { id: "a1", type: "assistant", finish: "tool-calls", model: { providerID: "p", id: "m" }, cost: 0.1,
-      content: [{ type: "tool", id: "t1", name: "bash", state: { status: "completed", input: {}, content: [] } }] },
-    { id: "a2", type: "assistant", finish: "stop", model: { providerID: "p", id: "m" }, cost: 0.2, content: [{ type: "text", text: "done" }] },
-    { id: "a3", type: "assistant", finish: "stop", model: { providerID: "p", id: "m" }, cost: 0.3, content: [] },
+    {
+      id: "a1",
+      type: "assistant",
+      finish: "tool-calls",
+      model: { providerID: "p", id: "m" },
+      cost: 0.1,
+      content: [
+        {
+          type: "tool",
+          id: "t1",
+          name: "bash",
+          state: { status: "completed", input: {}, content: [] },
+        },
+      ],
+    },
+    {
+      id: "a2",
+      type: "assistant",
+      finish: "stop",
+      model: { providerID: "p", id: "m" },
+      cost: 0.2,
+      content: [{ type: "text", text: "done" }],
+    },
+    {
+      id: "a3",
+      type: "assistant",
+      finish: "stop",
+      model: { providerID: "p", id: "m" },
+      cost: 0.3,
+      content: [],
+    },
   ]
   const { messages, parts } = normalizeMessages(raw)
   assert.equal(messages[0].role, "user")
@@ -84,7 +141,9 @@ assert.equal(contentText(undefined), "")
 // ── 实时首字注入：text part 使用事件捕获的 textStart（v2 实时块必需）─────────
 {
   const rec = {
-    id: "a1", type: "assistant", time: { created: 100, streamed: 900 },
+    id: "a1",
+    type: "assistant",
+    time: { created: 100, streamed: 900 },
     content: [{ type: "text", text: "hi" }],
   }
   // 无 textStart（历史数据，无从得知首字）→ 留空，不用 streamed 伪造（否则 TTFT≈整段生成时长）
@@ -96,7 +155,11 @@ assert.equal(contentText(undefined), "")
   // 历史 text-only 步：不计入性能样本（而非给出被 streamed 撑大的假 TTFT）
   assert.equal(
     computePerfSample(
-      { id: "a1", time: { created: 100, completed: 900 }, tokens: { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } } } as any,
+      {
+        id: "a1",
+        time: { created: 100, completed: 900 },
+        tokens: { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } },
+      } as any,
       buildParts(rec) as any,
     ),
     null,
@@ -106,16 +169,32 @@ assert.equal(contentText(undefined), "")
 // ── 工具状态归一化：v2 "streaming"（参数流式期）→ V1 "pending" ──────────────
 {
   const streaming = buildParts({
-    id: "a3", type: "assistant",
-    content: [{ type: "tool", id: "t3", name: "bash", time: { created: 300 },
-      state: { status: "streaming", input: '{"cmd":"l' } }],
+    id: "a3",
+    type: "assistant",
+    content: [
+      {
+        type: "tool",
+        id: "t3",
+        name: "bash",
+        time: { created: 300 },
+        state: { status: "streaming", input: '{"cmd":"l' },
+      },
+    ],
   }).find((p) => p.type === "tool")
   assert.equal(streaming.state.status, "pending")
   assert.equal(streaming.state.raw, '{"cmd":"l')
   assert.equal(streaming.state.time.start, 300)
   const done = buildParts({
-    id: "a4", type: "assistant",
-    content: [{ type: "tool", id: "t4", name: "read", state: { status: "completed", input: {}, content: [] } }],
+    id: "a4",
+    type: "assistant",
+    content: [
+      {
+        type: "tool",
+        id: "t4",
+        name: "read",
+        state: { status: "completed", input: {}, content: [] },
+      },
+    ],
   }).find((p) => p.type === "tool")
   assert.equal(done.state.status, "completed")
 }
@@ -133,7 +212,10 @@ assert.equal(contentText(undefined), "")
     },
   } as unknown as Parameters<typeof collectTokenDist>[0]
   const out = collectTokenDist(api, messages as any, undefined)
-  assert.deepEqual(out.skills.map((s) => s.name), ["pdf"])
+  assert.deepEqual(
+    out.skills.map((s) => s.name),
+    ["pdf"],
+  )
   assert.ok(out.skills[0].tokens > 0)
   assert.ok(out.dist.toolResult > 0)
 }
@@ -154,7 +236,10 @@ assert.equal(contentText(undefined), "")
         onHandlers.set(type, arr)
         return () => {}
       },
-      listen(h: (e: any) => void) { listeners.push(h); return () => {} },
+      listen(h: (e: any) => void) {
+        listeners.push(h)
+        return () => {}
+      },
       session: {
         message: { list: () => raw, get: () => undefined },
         status: () => "running",
@@ -164,7 +249,7 @@ assert.equal(contentText(undefined), "")
     },
     storage: {
       store(key: string, opts: { initial: any }) {
-        if (!stores.has(key)) stores.set(key, { value: opts.initial })
+        if (!stores.has(key)) stores.set(key, opts.initial)
         const s = stores.get(key)!
         return [s, async (fn: (d: any) => void) => fn(s)] as const
       },
@@ -187,7 +272,10 @@ assert.equal(contentText(undefined), "")
     // 就地增长 + delta 事件（每个 session.* 事件都会使缓存失效）
     for (let i = 0; i < 40; i++) {
       rp.text += "思考内容"
-      emit("session.reasoning.delta", { created: 1200, data: { assistantMessageID: "a1", delta: "思考内容" } })
+      emit("session.reasoning.delta", {
+        created: 1200,
+        data: { assistantMessageID: "a1", delta: "思考内容" },
+      })
     }
     api.state.session.messages("s1") // 内容变化后重新归一化（真实路径先 messages 再 part）
     assert.equal((api.state.part("a1")[0] as any).text, "思考内容".repeat(40))
@@ -199,4 +287,164 @@ assert.equal(contentText(undefined), "")
   }
 }
 
-console.log("v2 messages tests passed")
+// 验证真实 Solid 嵌套更新、无事件加载、会话隔离与监听器清理。
+{
+  const [store, setStore] = createStore({
+    sessions: {
+      s1: [
+        {
+          id: "reactive-a",
+          type: "assistant",
+          time: { created: 100 },
+          content: [{ type: "text", text: "a" }],
+        },
+      ],
+      s2: [{ id: "reactive-b", type: "assistant", time: { created: 100 }, content: [] }],
+    },
+  })
+  let listener: ((event: any) => void) | undefined
+  let removed = false
+  const context: any = {
+    data: {
+      listen: (handler: (event: any) => void) => {
+        listener = handler
+        return () => {
+          removed = true
+          listener = undefined
+        }
+      },
+      on: () => () => {},
+      session: {
+        message: { list: (id: keyof typeof store.sessions) => store.sessions[id] },
+        get: () => undefined,
+        status: () => "running",
+      },
+      location: { model: { list: () => [] }, agent: { list: () => [] } },
+    },
+    storage: {
+      store: (_key: string, options: any) => [
+        options.initial,
+        async (fn: (draft: any) => void) => fn(options.initial),
+      ],
+    },
+  }
+  const api = createPanelApi(context)
+  let dispose!: () => void
+  const observed = createRoot((cleanup) => {
+    dispose = cleanup
+    return createMemo(() => {
+      api.state.session.messages("s1")
+      return api.state.part("reactive-a")[0]?.text
+    })
+  })
+  assert.equal(observed(), "a")
+  const other = api.state.session.messages("s2")
+  setStore(
+    "sessions",
+    "s1",
+    produce((messages) => {
+      messages[0].content[0].text = "updated"
+    }),
+  )
+  assert.equal(observed(), "updated", "cache hits retain nested dependencies even without an event")
+  listener?.({
+    details: {
+      type: "session.text.started",
+      created: 120,
+      data: { sessionID: "s1", assistantMessageID: "reactive-a" },
+    },
+  })
+  assert.equal(api.state.part("reactive-a")[0].time.start, 120)
+  assert.equal(
+    api.state.session.messages("s2"),
+    other,
+    "unrelated sessions keep their cached result",
+  )
+  setStore("sessions", "s1", [])
+  assert.equal(observed(), undefined, "reverting messages removes stale part lookups")
+  dispose()
+  api.dispose()
+  assert.equal(removed, true)
+}
+
+{
+  const { messages } = normalizeMessages([
+    { id: "u", type: "user" },
+    { id: "a", type: "assistant", finish: "stop" },
+    { id: "steer", type: "user" },
+    { id: "b", type: "assistant", finish: "tool-calls" },
+    { id: "idle", type: "idle" },
+    { id: "u2", type: "user" },
+    { id: "c", type: "assistant" },
+  ])
+  assert.equal(
+    messages[1].parentID,
+    messages[3].parentID,
+    "steered input remains in the current idle-delimited turn",
+  )
+  assert.notEqual(messages[3].parentID, messages[6].parentID)
+  const legacy = normalizeMessages([
+    { id: "a", type: "assistant", finish: "tool-calls" },
+    { id: "u", type: "user" },
+    { id: "b", type: "assistant" },
+  ])
+  assert.notEqual(legacy.messages[0].parentID, legacy.messages[2].parentID)
+}
+
+// 同一键的写入按顺序执行；保存失败不能阻断下一次保存。
+{
+  const writes: { value: unknown; resolve: () => void; reject: (error: Error) => void }[] = []
+  const stored = { value: undefined as unknown }
+  const api = createPanelApi({
+    data: { listen: () => () => {} },
+    storage: {
+      store: () => [
+        stored,
+        async (mutate: (draft: typeof stored) => void) => {
+          const draft = { ...stored }
+          mutate(draft)
+          await new Promise<void>((resolve, reject) =>
+            writes.push({ value: draft.value, resolve, reject }),
+          )
+          stored.value = draft.value
+        },
+      ],
+    },
+  } as any)
+  try {
+    const first = api.kv.set("toggle", false) as Promise<void>
+    const second = api.kv.set("toggle", true) as Promise<void>
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.deepEqual(
+      writes.map((write) => write.value),
+      [false],
+    )
+    writes[0].resolve()
+    await first
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.deepEqual(
+      writes.map((write) => write.value),
+      [false, true],
+    )
+    writes[1].resolve()
+    await second
+    assert.equal(api.kv.get("toggle"), true)
+    const failed = api.kv.set("toggle", false) as Promise<void>
+    const retried = api.kv.set("toggle", true) as Promise<void>
+    await Promise.resolve()
+    await Promise.resolve()
+    writes[2].reject(new Error("disk full"))
+    await assert.rejects(failed, /disk full/)
+    await Promise.resolve()
+    await Promise.resolve()
+    writes[3].resolve()
+    await retried
+    assert.equal(api.kv.get("toggle"), true)
+  } finally {
+    api.dispose()
+  }
+}
+
+console.log("v2 消息适配测试通过")

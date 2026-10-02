@@ -11,7 +11,7 @@ export interface App {
   readonly channel: string
 }
 
-/** location = { directory, workspaceID? }（packages/client generated types）。 */
+/** location = { directory, workspaceID? }（packages/client 生成的类型）。 */
 export interface LocationRef {
   readonly directory: string
   readonly workspaceID?: string
@@ -39,7 +39,11 @@ export interface SessionInfo {
 export interface SessionMessageInfo {
   readonly id: string
   readonly type: string
-  readonly time?: { readonly created?: number; readonly streamed?: number; readonly completed?: number }
+  readonly time?: {
+    readonly created?: number
+    readonly streamed?: number
+    readonly completed?: number
+  }
   readonly [key: string]: any
 }
 
@@ -133,11 +137,41 @@ export type SlotPath =
   | "sidebar.footer"
 
 export type SlotClaim = { readonly render: (input: any) => any } & (
-  | { readonly prepend: SlotPath; readonly append?: never; readonly before?: never; readonly after?: never; readonly replace?: never }
-  | { readonly append: SlotPath; readonly prepend?: never; readonly before?: never; readonly after?: never; readonly replace?: never }
-  | { readonly before: SlotPath; readonly prepend?: never; readonly append?: never; readonly after?: never; readonly replace?: never }
-  | { readonly after: SlotPath; readonly prepend?: never; readonly append?: never; readonly before?: never; readonly replace?: never }
-  | { readonly replace: SlotPath; readonly prepend?: never; readonly append?: never; readonly before?: never; readonly after?: never }
+  | {
+      readonly prepend: SlotPath
+      readonly append?: never
+      readonly before?: never
+      readonly after?: never
+      readonly replace?: never
+    }
+  | {
+      readonly append: SlotPath
+      readonly prepend?: never
+      readonly before?: never
+      readonly after?: never
+      readonly replace?: never
+    }
+  | {
+      readonly before: SlotPath
+      readonly prepend?: never
+      readonly append?: never
+      readonly after?: never
+      readonly replace?: never
+    }
+  | {
+      readonly after: SlotPath
+      readonly prepend?: never
+      readonly append?: never
+      readonly before?: never
+      readonly replace?: never
+    }
+  | {
+      readonly replace: SlotPath
+      readonly prepend?: never
+      readonly append?: never
+      readonly before?: never
+      readonly after?: never
+    }
 )
 
 export interface KeymapCommand {
@@ -168,18 +202,39 @@ export interface Keymap {
 
 export interface Dialog {
   alert(options: { title: string; message: string }): Promise<void>
-  confirm(options: { title: string; message: string; label?: { confirm?: string; cancel?: string } }): Promise<boolean | undefined>
-  prompt(options: { title: string; description?: string; placeholder?: string; value?: string }): Promise<string | undefined>
+  confirm(options: {
+    title: string
+    message: string
+    label?: { confirm?: string; cancel?: string }
+  }): Promise<boolean | undefined>
+  prompt(options: {
+    title: string
+    description?: string
+    placeholder?: string
+    value?: string
+  }): Promise<string | undefined>
   select<Value>(options: {
     title: string
     placeholder?: string
-    options: readonly { title: string; value: Value; description?: string; category?: string; disabled?: boolean }[]
+    options: readonly {
+      title: string
+      value: Value
+      description?: string
+      category?: string
+      disabled?: boolean
+    }[]
     current?: Value
   }): Promise<Value | undefined>
 }
 
 export interface Toast {
-  show(options: { title?: string; message: string; variant?: string; duration?: number; sessionID?: string }): void
+  show(options: {
+    title?: string
+    message: string
+    variant?: string
+    duration?: number
+    sessionID?: string
+  }): void
 }
 
 export interface Route {
@@ -195,7 +250,10 @@ export interface UI {
   readonly router: {
     current(): Route
     navigate(destination: any): void
-    register(page: { name: string; render: (input: { data?: Record<string, any> }) => any }): () => void
+    register(page: {
+      name: string
+      render: (input: { data?: Record<string, any> }) => any
+    }): () => void
   }
   readonly panel: {
     open(name: string, options?: { readonly presentation?: "panel" | "fullscreen" }): boolean
@@ -209,7 +267,11 @@ export interface Context {
   readonly options: Readonly<Record<string, any>>
   readonly location: LocationRef | undefined
   readonly app: App
-  readonly renderer: { readonly terminalWidth: number; on?: (event: string, cb: () => void) => unknown; off?: (event: string, cb: () => void) => unknown }
+  readonly renderer: {
+    readonly terminalWidth: number
+    on?: (event: string, cb: () => void) => unknown
+    off?: (event: string, cb: () => void) => unknown
+  }
   readonly client: any
   readonly data: Data
   readonly theme: Theme

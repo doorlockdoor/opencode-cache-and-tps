@@ -1,32 +1,37 @@
-// ── UI helpers ──
+// ── 界面工具 ──
 // 终端宽度/CJK 视觉列、Morandi 去饱和配色、数值格式化。
 // 由 V1 壳、V2 壳与共享面板共同消费（宿主无关，纯函数）。
 
-// ── terminal-width helpers ────────────────────────────────────────
-// CJK characters occupy 2 terminal columns; padEnd/padStart count
-// string length (=1 per char), which breaks alignment with mixed text.
+// ── 终端宽度工具 ────────────────────────────────────────
+// 中日韩字符通常占两列；padEnd/padStart 按字符串长度补齐，
+// 无法正确对齐混合文本，因此按终端显示宽度计算。
 
 function charColumns(c: string): number {
   const code = c.codePointAt(0) ?? 0
-  if (code < 0x20) return 0                              // control
-  if (code < 0x7F) return 1                              // ASCII
-  if (code < 0xA0) return 0                              // C1 controls
-  // East-Asian wide / fullwidth ranges
-  if ((code >= 0x1100 && code <= 0x115F) ||              // Hangul Jamo
-      (code >= 0x2E80 && code <= 0xA4CF) ||              // CJK Radicals … Yi
-      (code >= 0xAC00 && code <= 0xD7A3) ||              // Hangul
-      (code >= 0xF900 && code <= 0xFAFF) ||              // CJK Compat
-      (code >= 0xFE10 && code <= 0xFE6F) ||              // Vertical / Compat
-      (code >= 0xFF01 && code <= 0xFF60) ||              // Fullwidth
-      (code >= 0xFFE0 && code <= 0xFFE6) ||              // Fullwidth signs
-      (code >= 0x1F300 && code <= 0x1F64F) ||            // Misc Symbols (emoji)
-      (code >= 0x20000 && code <= 0x3FFFD))              // SIP / TIP
+  if (code < 0x20) return 0 // 控制字符
+  if (code < 0x7f) return 1 // ASCII 字符
+  if (code < 0xa0) return 0 // C1 控制字符
+  // 东亚宽字符与全角字符区段
+  if (
+    (code >= 0x1100 && code <= 0x115f) || // 韩文字母
+    (code >= 0x2e80 && code <= 0xa4cf) || // 中日韩部首至彝文区段
+    (code >= 0xac00 && code <= 0xd7a3) || // 韩文音节
+    (code >= 0xf900 && code <= 0xfaff) || // 中日韩兼容字符
+    (code >= 0xfe10 && code <= 0xfe6f) || // 竖排与兼容形式
+    (code >= 0xff01 && code <= 0xff60) || // 全角形式
+    (code >= 0xffe0 && code <= 0xffe6) || // 全角符号
+    (code >= 0x1f300 && code <= 0x1f64f) || // 杂项符号（表情）
+    (code >= 0x20000 && code <= 0x3fffd)
+  )
+    // 补充汉字区（SIP / TIP）
     return 2
   return 1
 }
 
 function visualWidth(s: string): number {
-  let w = 0; for (const c of s) w += charColumns(c); return w
+  let w = 0
+  for (const c of s) w += charColumns(c)
+  return w
 }
 
 function visualPadEnd(s: string, cols: number): string {
@@ -34,21 +39,26 @@ function visualPadEnd(s: string, cols: number): string {
   return pad > 0 ? s + " ".repeat(pad) : s
 }
 
-/** Truncate `s` to fit within `maxCols` visual columns, appending "…" when cut. */
+/** 将 s 截断至 maxCols 显示列，截断时追加省略号。 */
 function truncateVisual(s: string, maxCols: number): string {
   if (visualWidth(s) <= maxCols) return s
-  let result = "", w = 0
+  let result = "",
+    w = 0
   for (const c of s) {
     const cw = charColumns(c)
-    if (w + cw > maxCols - 1) { result += "\u2026"; break }
-    result += c; w += cw
+    if (w + cw > maxCols - 1) {
+      result += "…"
+      break
+    }
+    result += c
+    w += cw
   }
   return result
 }
 
-// ── color helpers ────────────────────────────────────────────────
+// ── 颜色工具 ────────────────────────────────────────────────
 
-/** Extract { r, g, b } (0–255) from a hex string or RGBA-like object. */
+/** 从十六进制字符串或 RGBA 对象提取 0–255 的 RGB 通道值。 */
 function rgb(raw: unknown): { r: number; g: number; b: number } | null {
   if (typeof raw === "string" && raw.startsWith("#")) {
     const h = raw.slice(1)
@@ -61,7 +71,7 @@ function rgb(raw: unknown): { r: number; g: number; b: number } | null {
   if (raw && typeof raw === "object") {
     const o = raw as Record<string, unknown>
     if (typeof o.r === "number" && typeof o.g === "number" && typeof o.b === "number") {
-      // RGBA channels may be 0-1 floats; detect and upscale.
+      // RGBA 通道可能为 0–1 浮点值，检测后换算为 0–255。
       const scale = o.r > 1 || o.g > 1 || o.b > 1 ? 1 : 255
       return {
         r: Math.round(o.r * scale),
@@ -73,7 +83,7 @@ function rgb(raw: unknown): { r: number; g: number; b: number } | null {
   return null
 }
 
-/** HSL saturation of an RGB color (0–1). */
+/** 计算 RGB 颜色的 HSL 饱和度（0–1）。 */
 function saturation(r: number, g: number, b: number): number {
   const max = Math.max(r, g, b) / 255
   const min = Math.min(r, g, b) / 255
@@ -84,30 +94,21 @@ function saturation(r: number, g: number, b: number): number {
 }
 
 /**
- * If the colour's saturation exceeds `maxSat`, pull it toward grey
- * until saturation drops to maxSat.  Returns a hex string.
+ * 饱和度超过 maxSat 时混入灰色，降低至上限；返回十六进制颜色。
  */
 function desaturateTo(raw: unknown, maxSat: number, fallback: string): string {
   const c = rgb(raw)
   if (!c) return fallback
   const sat = saturation(c.r, c.g, c.b)
   if (sat <= maxSat) {
-    // already muted — return as hex
+    // 饱和度已足够低，直接返回十六进制颜色。
     return "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("")
   }
-  /**
-   * Binary search for the optimal grey-mix ratio α (0…1).
-   *
-   * 12 iterations → 1/2^12 ≈ 1/4096 resolution.  The downstream RGB
-   * channels are only 0–255 (8 bit), so 8 iterations (1/256) would
-   * technically suffice; 12 is intentionally over-budget — the extra
-   * precision costs almost nothing and guarantees the saturation probe
-   * converges to within a fraction of an 8‑bit step, eliminating
-   * colour banding in edge cases.
-   */
-  // Bt.601 luma (perceptual brightness used as the grey anchor)
+  // 二分搜索混灰比例；12 次迭代已超过 8 位通道精度。
+  // 使用 BT.601 感知亮度作为混灰基准。
   const luma = c.r * 0.299 + c.g * 0.587 + c.b * 0.114
-  let lo = 0, hi = 1
+  let lo = 0,
+    hi = 1
   for (let i = 0; i < 12; i++) {
     const mid = (lo + hi) / 2
     const nr = Math.round(c.r + (luma - c.r) * mid)
@@ -119,41 +120,38 @@ function desaturateTo(raw: unknown, maxSat: number, fallback: string): string {
   const nr = Math.round(c.r + (luma - c.r) * hi)
   const ng = Math.round(c.g + (luma - c.g) * hi)
   const nb = Math.round(c.b + (luma - c.b) * hi)
-  return "#" + [nr, ng, nb].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  return (
+    "#" +
+    [nr, ng, nb].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  )
 }
 
-/** Darken a hex colour by multiplying each channel by `factor` (0–1). */
+/** 各颜色通道乘以 factor（0–1），使十六进制颜色变暗。 */
 function dimColor(hex: string, factor = 0.5): string {
   const c = rgb(hex)
   if (!c) return hex
   const r = Math.round(c.r * factor)
   const g = Math.round(c.g * factor)
   const b = Math.round(c.b * factor)
-  return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  return (
+    "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  )
 }
 
-// Morandi fallbacks — used when a theme colour cannot be resolved
+// 主题颜色无法解析时使用的莫兰迪默认色。
 const FALLBACK = {
   primary: "#8B9DAF",
-  text:    "#C5C5BB",
-  muted:   "#7A7A72",
+  text: "#C5C5BB",
+  muted: "#7A7A72",
   success: "#9CAF8B",
   warning: "#C5B88D",
-  error:   "#B08A8A",
-  border:  "#6B6B63",
+  error: "#B08A8A",
+  border: "#6B6B63",
 } as const
 
 /**
- * Desaturation ceiling for the Morandi-style palette.
- *
- * Morandi colours float around 0.15–0.30 saturation in HSL space.
- * 0.28 sits near the upper end of that range: it strips the aggressive
- * punch from high-saturation themes (Dracula, Solarized …) while
- * preserving enough colour identity that green / orange / red hit-rate
- * coding stays distinguishable.
- *
- * Lower → more grey, harder to tell colours apart.
- * Higher → bright themes bleed through and defeat the muted look.
+ * 莫兰迪配色的饱和度上限：0.28 可柔化鲜艳主题，同时保留命中率的绿、橙、红区分。
+ * 值越低越偏灰，越高越接近原主题。
  */
 const MAX_SAT = 0.28
 

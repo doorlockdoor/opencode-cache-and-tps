@@ -5,37 +5,64 @@ import type { AssistantMessage, UserMessage } from "@opencode-ai/sdk"
 import type { Part } from "@opencode-ai/sdk/v2"
 import { estimateTokens } from "../src/tokens"
 
-// ── fixtures ───────────────────────────────────────────────────────────────
+// ── 测试数据 ───────────────────────────────────────────────────────────────
 
-function fakeApi(partsByMsg: Record<string, Part[]>, config: Record<string, unknown> = {}): TuiPluginApi {
-  return { state: { part: (id: string) => partsByMsg[id] ?? [], config } } as unknown as TuiPluginApi
+function fakeApi(
+  partsByMsg: Record<string, Part[]>,
+  config: Record<string, unknown> = {},
+): TuiPluginApi {
+  return {
+    state: { part: (id: string) => partsByMsg[id] ?? [], config },
+  } as unknown as TuiPluginApi
 }
 
 function userMsg(id: string, overrides: Record<string, unknown> = {}): UserMessage {
   return {
-    id, sessionID: "s1", role: "user", time: { created: 1000 },
+    id,
+    sessionID: "s1",
+    role: "user",
+    time: { created: 1000 },
     ...overrides,
   } as unknown as UserMessage
 }
 
 function assMsg(id: string, overrides: Record<string, unknown> = {}): AssistantMessage {
   return {
-    id, sessionID: "s1", role: "assistant", time: { created: 2000, completed: 4000 },
-    parentID: "p1", modelID: "model", providerID: "prov", mode: "default", agent: "build",
-    path: { cwd: "/", root: "/" }, cost: 0,
+    id,
+    sessionID: "s1",
+    role: "assistant",
+    time: { created: 2000, completed: 4000 },
+    parentID: "p1",
+    modelID: "model",
+    providerID: "prov",
+    mode: "default",
+    agent: "build",
+    path: { cwd: "/", root: "/" },
+    cost: 0,
     tokens: { input: 10, output: 100, reasoning: 50, cache: { read: 0, write: 0 } },
     ...overrides,
   } as unknown as AssistantMessage
 }
 
 function textPart(mid: string, text: string, flags: Record<string, unknown> = {}): Part {
-  return { id: `t-${mid}-${text.length}`, sessionID: "s1", messageID: mid, type: "text", text, ...flags } as unknown as Part
+  return {
+    id: `t-${mid}-${text.length}`,
+    sessionID: "s1",
+    messageID: mid,
+    type: "text",
+    text,
+    ...flags,
+  } as unknown as Part
 }
 
 function toolPart(mid: string, state: Record<string, unknown>): Part {
   return {
     id: `tl-${mid}-${state.status}-${(state.output as string | undefined)?.length ?? 0}`,
-    sessionID: "s1", messageID: mid, type: "tool", callID: "c", tool: "bash",
+    sessionID: "s1",
+    messageID: mid,
+    type: "tool",
+    callID: "c",
+    tool: "bash",
     state: { status: "completed", time: { start: 2500, end: 3000 }, ...state },
   } as unknown as Part
 }
@@ -48,15 +75,18 @@ function toolPart(mid: string, state: Record<string, unknown>): Part {
     u1: [
       textPart("u1", "hello world"),
       textPart("u1", "synthetic text", { synthetic: true }), // 跳过
-      { id: "f1", sessionID: "s1", messageID: "u1", type: "file", source: { text: { value: "file content" } } } as unknown as Part,
+      {
+        id: "f1",
+        sessionID: "s1",
+        messageID: "u1",
+        type: "file",
+        source: { text: { value: "file content" } },
+      } as unknown as Part,
     ],
     a1: [toolPart("a1", { raw, output: "STDOUT" })],
   }
   const api = fakeApi(parts, { agent: { build: { prompt: "AGENTSYS" } } })
-  const msgs = [
-    userMsg("u1", { system: "USERSYS" }),
-    assMsg("a1"),
-  ] as never[]
+  const msgs = [userMsg("u1", { system: "USERSYS" }), assMsg("a1")] as never[]
   const { dist, hasDistData, skills } = collectTokenDist(api, msgs, { agent: "build" })
   assert.equal(dist.system, estimateTokens("AGENTSYS") + estimateTokens("USERSYS"))
   assert.equal(dist.user, estimateTokens("hello world") + estimateTokens("file content"))
@@ -87,7 +117,11 @@ function toolPart(mid: string, state: Record<string, unknown>): Part {
   const m = [assMsg("a1")] as never[]
   const fp0 = distFingerprint(m[0] as AssistantMessage, parts.a1)
   ;(tp as unknown as { text: string }).text = "x".repeat(50_000) // 模拟流式 delta
-  assert.equal(distFingerprint(m[0] as AssistantMessage, parts.a1), fp0, "assistant text 增长不应改变指纹")
+  assert.deepEqual(
+    distFingerprint(m[0] as AssistantMessage, parts.a1),
+    fp0,
+    "assistant text 增长不应改变指纹",
+  )
   const r1 = collectTokenDist(api, m, undefined)
   const r2 = collectTokenDist(api, m, undefined)
   assert.equal(r2.dist.toolCall, r1.dist.toolCall) // 缓存复用，结果一致
@@ -141,34 +175,89 @@ function toolPart(mid: string, state: Record<string, unknown>): Part {
 
 {
   const api = fakeApi({})
-  const { dist, hasDistData } = collectTokenDist(api, [
-    assMsg("a1", { tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
-  ] as never[], undefined)
-  assert.equal(dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult + dist.output + dist.reasoning, 0)
+  const { dist, hasDistData } = collectTokenDist(
+    api,
+    [
+      assMsg("a1", { tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    ] as never[],
+    undefined,
+  )
+  assert.equal(
+    dist.system +
+      dist.user +
+      dist.agent +
+      dist.toolCall +
+      dist.toolResult +
+      dist.output +
+      dist.reasoning,
+    0,
+  )
   assert.equal(hasDistData, false)
 }
 
-// ── collectRoundUsage ──────────────────────────────────────────────────────
+// ── 回合用量统计 ──────────────────────────────────────────────────────
 
 {
   const stepPart = (mid: string, cost: number) =>
-    ({ id: `sf-${mid}-${cost}`, sessionID: "s1", messageID: mid, type: "step-finish", cost }) as unknown as Part
+    ({
+      id: `sf-${mid}-${cost}`,
+      sessionID: "s1",
+      messageID: mid,
+      type: "step-finish",
+      cost,
+    }) as unknown as Part
   const parts = {
     a0: [stepPart("a0", 9)],
     a2: [stepPart("a2", 0), stepPart("a2", 5)], // 首个有限值胜出：cost=0 合法
   }
   const api = fakeApi(parts)
   const msgs = [
-    assMsg("a0", { parentID: "p0", tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
-    assMsg("a1"),                                        // 无 tokens → 不作 lastAssMsg
-    assMsg("a2", { tokens: { input: 100, output: 30, reasoning: 0, cache: { read: 20, write: 0 } } }),
-    userMsg("u2"),                                       // 非 assistant → 链回溯跳过
+    assMsg("a0", {
+      parentID: "p0",
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+    assMsg("a1"), // 无 tokens → 不作 lastAssMsg
+    assMsg("a2", {
+      tokens: { input: 100, output: 30, reasoning: 0, cache: { read: 20, write: 0 } },
+    }),
+    userMsg("u2"), // 非 assistant → 链回溯跳过
   ] as never[]
   const u = collectRoundUsage(api, msgs)
   assert.equal(u.apiInput, 120) // 100 + 20（最后一条有数据消息 = a2）
   assert.equal(u.apiOutput, 30)
-  assert.equal(u.stepCount, 2)  // p1 链（a2 贡献 2，a1 无 step parts）；a0 属 p0，异 parentID 处 break，其 stepPart(9) 不计
-  assert.equal(u.stepCost, 0)   // 第一个有限 cost（0）胜出，而非后面的 5
+  assert.equal(u.stepCount, 2) // p1 链（a2 贡献 2，a1 无 step parts）；a0 属 p0，异 parentID 处 break，其 stepPart(9) 不计
+  assert.equal(u.stepCost, 0) // 第一个有限 cost（0）胜出，而非后面的 5
 }
 
-console.log("dist tests passed")
+// 等长编辑、工具名称或参数变更都应使分布小计缓存失效。
+{
+  const text = textPart("same-length", "abcd") as any
+  const parts = { "same-length": [text] }
+  const api = fakeApi(parts)
+  const messages = [userMsg("same-length")] as never[]
+  const before = collectTokenDist(api, messages, undefined).dist.user
+  text.text = "你好世界"
+  const after = collectTokenDist(api, messages, undefined).dist.user
+  assert.notEqual(before, after)
+  assert.equal(after, estimateTokens(text.text))
+  const tool = toolPart("mutable-tool", {
+    input: { prompt: "abcd" },
+    output: "body",
+    metadata: { name: "foo" },
+  }) as any
+  const toolApi = fakeApi({ "mutable-tool": [tool] })
+  const assistant = [assMsg("mutable-tool")] as never[]
+  collectTokenDist(toolApi, assistant, undefined)
+  tool.tool = "task"
+  tool.state.input.prompt = "你好世界"
+  assert.equal(
+    collectTokenDist(toolApi, assistant, undefined).dist.agent,
+    estimateTokens("你好世界"),
+  )
+  tool.tool = "skill"
+  assert.equal(collectTokenDist(toolApi, assistant, undefined).skills[0].name, "foo")
+  tool.state.metadata.name = "bar"
+  assert.equal(collectTokenDist(toolApi, assistant, undefined).skills[0].name, "bar")
+}
+
+console.log("token 分布测试通过")

@@ -1,99 +1,23 @@
 /** @jsxImportSource @opentui/solid */
 
-import { createSignal, createEffect, onMount, onCleanup, untrack } from "solid-js"
+import { createEffect, onMount, onCleanup, untrack } from "solid-js"
 import type { Context } from "./types"
 import { createPanelApi } from "./panel-api"
 import { TokenCachePanel } from "../panel/TokenCachePanel"
-import type { BalanceState, PanelApi, PanelSignals, DisplayStyle, TpsMode } from "../panel/panel-api"
+import type { PanelApi } from "../panel/panel-api"
 import { KV_PREFIX } from "../panel/panel-api"
 import { StatusView } from "./status"
 import { mapTheme } from "./theme"
 import { makeCommands, findOpencodeKeyV2, currentSessionID } from "./commands"
-import { credentialsDbReady } from "./credentials"
+import { credentialsDbReady, closeCredentialDatabase } from "./credentials"
 import { restorePanelPrefs } from "../commands-shared"
-import { getBalanceProvider } from "../balance-providers"
+import { persistPreference } from "../preferences"
 import { syncAutoBalance } from "../balance"
-import { LANG_META, detectLang, type LangCode } from "../i18n"
-
-const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes（对齐 V1）
-
-declare const process: { env: Record<string, string | undefined> } | undefined
-const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
-const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
-  ? (DEBUG_LANG as LangCode)
-  : detectLang()
-
-type Signals = PanelSignals & { setBalanceState: (v: BalanceState) => void }
-
-/** v2 侧创建面板信号（默认值；偏好持久化经 PanelApi.kv → storage.store）。 */
-function createPanelSignals(): Signals {
-  const [currencySymbol, setCurrencySymbol] = createSignal("$")
-  const [exchangeRate, setExchangeRate] = createSignal(1)
-  const [langCode, setLangCode] = createSignal<LangCode>(INIT_LANG)
-  const [sectionDetail, setSectionDetail] = createSignal(true)
-  const [sectionModel, setSectionModel] = createSignal(true)
-  const [sectionDist, setSectionDist] = createSignal(true)
-  const [sectionSkills, setSectionSkills] = createSignal(true)
-  const [sectionPerf, setSectionPerf] = createSignal(true)
-  const [perfModelFilter, setPerfModelFilter] = createSignal(true)
-  const [style, setStyle] = createSignal<DisplayStyle>("default")
-  const [sectionBalance, setSectionBalance] = createSignal(true)
-  const [sectionBottom, setSectionBottom] = createSignal(true)
-  const [barShowHit, setBarShowHit] = createSignal(true)
-  const [barShowTokens, setBarShowTokens] = createSignal(false)
-  const [barShowTtft, setBarShowTtft] = createSignal(false)
-  const [barShowSpeed, setBarShowSpeed] = createSignal(true)
-  const [barShowLat, setBarShowLat] = createSignal(false)
-  const [barShowTool, setBarShowTool] = createSignal(true)
-  const [barShowBalance, setBarShowBalance] = createSignal(false)
-  // 精确 TPS 计算方式（/cache-tps；output 输出速度默认，perceived 体感速度仅 V2 可算）
-  const [tpsMode, setTpsMode] = createSignal<TpsMode>("output")
-  const [balanceRefresh, setBalanceRefresh] = createSignal(0)
-  const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
-  const [autoBalance, setAutoBalance] = createSignal(true)
-  const [balanceUnsupported, setBalanceUnsupported] = createSignal(false)
-  const [balanceState, setBalanceState] = createSignal<BalanceState>({ status: "idle", data: null, lastFetch: 0 })
-  const [balanceCurrency, setBalanceCurrency] = createSignal("")
-  const [borderVisible, setBorderVisible] = createSignal(true)
-  const [overrideSessionId, setOverrideSessionId] = createSignal<string | undefined>(undefined)
-  const [sidebarVisible, setSidebarVisible] = createSignal(true)
-  return {
-    currencySymbol, setCurrencySymbol,
-    exchangeRate, setExchangeRate,
-    langCode, setLangCode,
-    sectionDetail, setSectionDetail,
-    sectionModel, setSectionModel,
-    sectionDist, setSectionDist,
-    sectionSkills, setSectionSkills,
-    sectionPerf, setSectionPerf,
-    perfModelFilter, setPerfModelFilter,
-    style, setStyle,
-    sectionBalance, setSectionBalance,
-    sectionBottom, setSectionBottom,
-    barShowHit, setBarShowHit,
-    barShowTokens, setBarShowTokens,
-    barShowTtft, setBarShowTtft,
-    barShowSpeed, setBarShowSpeed,
-    barShowLat, setBarShowLat,
-    barShowTool, setBarShowTool,
-    barShowBalance, setBarShowBalance,
-    tpsMode, setTpsMode,
-    balanceRefresh, setBalanceRefresh,
-    balanceProviderId, setBalanceProviderId,
-    autoBalance, setAutoBalance,
-    balanceUnsupported, setBalanceUnsupported,
-    balanceState,
-    setBalanceState,
-    balanceCurrency, setBalanceCurrency,
-    borderVisible, setBorderVisible,
-    overrideSessionId, setOverrideSessionId,
-    sidebarVisible, setSidebarVisible,
-  }
-}
+import { createPanelSignals, type Signals } from "../panel/signals"
+import { createBalanceController, BALANCE_POLL_MS } from "../balance-controller"
 
 /** 常驻运行时根（app 插槽）：余额轮询、偏好恢复、自动切换、子代理清理、命令层——侧栏隐藏也生效。 */
 function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals }) {
-  let balanceSeq = 0
   /** 当前统计目标会话：子代理 override 优先，否则当前路由会话。 */
   const currentSid = () => props.signals.overrideSessionId() ?? currentSessionID(props.context)
 
@@ -105,42 +29,25 @@ function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals 
   }
   onMount(restorePrefs)
 
-  const pollBalance = async () => {
-    const provider = getBalanceProvider(props.signals.balanceProviderId())
-    let key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-    if (!key) {
-      // V2 凭据保存在宿主 SQLite：等库就绪再解析，避免首轮回退到过期的 auth.json
-      await credentialsDbReady()
-      key = findOpencodeKeyV2(props.context, provider)
-    }
-    const set = props.signals.setBalanceState
-    if (props.signals.balanceUnsupported()) { set({ status: "idle", data: null, lastFetch: 0 }); return }
-    if (!key) { set({ status: "idle", data: null, lastFetch: 0 }); return }
-    const prev = props.signals.balanceState()
-    if (prev.status === "ok" && prev.key === key && Date.now() - prev.lastFetch < BALANCE_POLL_MS) return
-    const seq = ++balanceSeq
-    set({ ...prev, status: "loading", error: undefined, key })
-    const controller = new AbortController()
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
-    try {
-      const data = await provider.fetchBalance(key, controller.signal)
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      set({ status: "ok", data, lastFetch: Date.now(), key })
-    } catch (err) {
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
-      set({ status: "error", data: null, lastFetch: 0, error: code, key })
-    }
-  }
-  createEffect(() => {
-    void props.signals.balanceRefresh()
-    untrack(() => { void pollBalance() })
+  const balance = createBalanceController(props.api, props.signals, async (provider) => {
+    await credentialsDbReady()
+    return findOpencodeKeyV2(props.context, provider)
   })
-  const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
-  onCleanup(() => clearInterval(balanceTimer))
+  createEffect(() => {
+    props.signals.balanceRefresh()
+    props.signals.balanceProviderId()
+    props.signals.balanceUnsupported()
+    untrack(() => {
+      void balance.poll(true)
+    })
+  })
+  const balanceTimer = setInterval(() => {
+    void balance.poll()
+  }, BALANCE_POLL_MS)
+  onCleanup(() => {
+    clearInterval(balanceTimer)
+    balance.dispose()
+  })
 
   // 自动切换余额 provider（唯一实现见 src/balance.ts；侧栏隐藏也生效）
   createEffect(() => {
@@ -155,7 +62,7 @@ function RuntimeRoot(props: { context: Context; api: PanelApi; signals: Signals 
       lastMainSid = main
       if (props.signals.overrideSessionId()) {
         props.signals.setOverrideSessionId(undefined)
-        void props.api.kv.set(`${KV_PREFIX}.session`, "")
+        persistPreference(props.api, `${KV_PREFIX}.session`, "")
       }
     }
   })
@@ -175,13 +82,13 @@ export default {
     const signals = createPanelSignals()
 
     // 常驻运行时（app 插槽）：余额轮询 / 偏好恢复 / 自动切换 / 命令层。
-    context.ui.slot({
+    const removeRuntime = context.ui.slot({
       append: "app",
       render: () => <RuntimeRoot context={context} api={api} signals={signals} />,
     })
 
     // 侧边栏完整面板（prepend，排在宿主官方信息之前）。纯展示，副作用在常驻层。
-    context.ui.slot({
+    const removePanel = context.ui.slot({
       prepend: "sidebar.content",
       render: (props: any) => (
         <TokenCachePanel
@@ -194,11 +101,23 @@ export default {
     })
 
     // 底部状态栏（含流式实时块，合并到 prompt.footer.status）。
-    context.ui.slot({
+    const removeStatus = context.ui.slot({
       append: "prompt.footer.status",
       render: (props: any) => (
-        <StatusView context={context} api={api} signals={signals} sessionID={String(props?.sessionID ?? "")} />
+        <StatusView
+          context={context}
+          api={api}
+          signals={signals}
+          sessionID={String(props?.sessionID ?? "")}
+        />
       ),
     })
+    return async () => {
+      removeStatus()
+      removePanel()
+      removeRuntime()
+      api.dispose()
+      await closeCredentialDatabase()
+    }
   },
 }
