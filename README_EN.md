@@ -54,7 +54,9 @@ For v1, edit `~/.config/opencode/tui.json` and add the package name.
 }
 ```
 
-Troubleshooting: if the plugin conflicts or misbehaves, clear the cache and restart opencode in a clean state, then narrow down the cause step by step. The v2 cache is at `~/.cache/opencode/npm`; the v1 cache is at `~/.cache/opencode/packages`.
+Troubleshooting: if the plugin conflicts, disable all plugin configuration, then enable them one at a time to narrow down the cause.
+
+Forced update: delete the cache to force the plugin to update. The v2 cache is at `~/.cache/opencode/npm`; the v1 cache is at `~/.cache/opencode/packages`.
 
 ## Local Build
 
