@@ -1,6 +1,6 @@
 ## Introduction
 
-Forked from [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-cache), adding first-token latency (TTFT), generation speed (TPS), and more, with real-time refresh.
+Forked from [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-cache), it presents cache hits (Cache), generation speed (TPS), first-token latency (TTFT), and other information in one unified view, with real-time refresh.
 > ✅ Updated for opencode v2 compatibility.
 
 <img src="https://raw.githubusercontent.com/doorlockdoor/opencode-cache-and-tps/master/assets/screen_shot_01.png" width="100%"></img>
@@ -9,19 +9,13 @@ Forked from [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-c
 - `/cache-style` — set the bottom info style: Default, DSH, or Minimal.
 - `/cache-tps` — set how TPS is calculated. By default it shows output speed; you can switch to perceived speed (opencode's calculation).
 - `/cache-bar` — toggle bottom info items. By default it shows Hit rate + Speed + Tools (the Tools item only appears while a tool is being called). All available options: Hit rate / Tokens / Balance / TTFT / Speed / Latency / Tools.
+- `/cache-lang` — set the display language: Chinese, English, Japanese, or Korean.
 
 **Included metrics**:
-- **TTFT**: Time to first token — perceived time from when the user sends a request (step) to when the first token arrives.
-- **TPS**: Token generation speed (excluding tool-call time).
-- **Latency**: Model generation time per request (step) — perceived time, excluding tool-call time.
+- From the original plugin: cache hits, token usage, balance, sidebar, and more.
+- Added: first-token latency, generation speed, generation time, and tool-call time.
 - Errors introduced by OpenCode's auto-compaction are ignored, and counting is paused while tools are suspended (e.g. asking a question).
 > Difference from the opencode client's TPS: the client's TPS includes TTFT — it is the perceived time from sending the request to completion of generation, averaged with weights, which is inherently smaller. This plugin's TPS is the provider's token count divided by generation time, taken as the median, which leans toward output speed.
-
-**Real-time TPS estimation**:
-- While streaming, the token count is an estimate that varies slightly by model; it is replaced with the exact value once the stream ends.
-- Chinese characters: 1.5 chars/token (measured 1.34 on GPT-o200k, 1.52 on DeepSeek-V4).
-- ASCII: 4.0 for reasoning streams, 2.9 for answer text, 3.7 for tools & code, 3.3 default for prose.
-- Full-width punctuation and full-width characters are counted as 1.
 
 ## Installation
 
@@ -92,4 +86,4 @@ v1 requires restarting opencode; v2 reloads automatically.
 
 ## License
 
-MIT
+MIT@Hotakus
